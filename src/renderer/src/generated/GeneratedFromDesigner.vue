@@ -3,6 +3,7 @@
   <div class="el-1774343507452-0028b4">1</div>
   <div class="el-1774343508987-346a6c">2</div>
   <div class="el-1774343581551-976c23">3</div>
+  <div class="el-1774343596144-6db38d">4</div>
   </section>
 </template>
 
@@ -48,5 +49,14 @@ const message = ref('由设计器生成的 Vue 组件')
   background: #ff8f3e;
   opacity: 0.9;
   z-index: 3;
+}
+.el-1774343596144-6db38d {
+  grid-column: 28 / span 5;
+  grid-row: 39 / span 5;
+  width: 50px;
+  height: 50px;
+  background: #4f7cff;
+  opacity: 0.9;
+  z-index: 4;
 }
 </style>
