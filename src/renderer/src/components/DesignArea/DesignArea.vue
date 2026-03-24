@@ -37,7 +37,6 @@ const elementStyle = (element: DesignElement): Record<string, string> => {
       height: `${element.height}px`,
       background: element.background,
       opacity: String(element.opacity),
-      zIndex: String(element.serial),
       position: 'relative'
     }
   }

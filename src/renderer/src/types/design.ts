@@ -13,6 +13,7 @@ export interface CanvasConfig {
 export interface DesignElement {
   id: string
   serial: number
+  parentId: string | null
   type: 'div'
   name: string
   x: number

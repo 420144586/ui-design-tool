@@ -9,6 +9,14 @@ import type {
 } from '@renderer/types/design'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+const isInside = (
+  target: { x: number; y: number; width: number; height: number },
+  container: { x: number; y: number; width: number; height: number }
+): boolean =>
+  target.x >= container.x &&
+  target.y >= container.y &&
+  target.x + target.width <= container.x + container.width &&
+  target.y + target.height <= container.y + container.height
 
 const defaultCanvas: CanvasConfig = {
   width: 1920,
@@ -71,8 +79,15 @@ export const useDesignStore = defineStore('design', {
     adjustZoom(delta: number): void {
       this.setZoom(this.canvas.zoom + delta)
     },
-    addElement(element: Omit<DesignElement, 'id' | 'serial'>): DesignElement {
-      const nextElement: DesignElement = { ...element, id: uid(), serial: this.nextSerial++ }
+    addElement(element: Omit<DesignElement, 'id' | 'serial' | 'parentId'>): DesignElement {
+      const candidates = this.elements.filter((item) => isInside(element, item))
+      const parent = candidates.sort((a, b) => a.width * a.height - b.width * b.height)[0]
+      const nextElement: DesignElement = {
+        ...element,
+        id: uid(),
+        serial: this.nextSerial++,
+        parentId: parent?.id ?? null
+      }
       this.elements.push(nextElement)
       this.selectedElementId = nextElement.id
       return nextElement
@@ -96,9 +111,10 @@ export const useDesignStore = defineStore('design', {
     duplicateSelectedElement(): void {
       const selected = this.selectedElement
       if (!selected) return
-      const { id, serial, ...rest } = selected
+      const { id, serial, parentId, ...rest } = selected
       void id
       void serial
+      void parentId
       this.addElement({
         ...rest,
         x: rest.x + this.canvas.gridSize,

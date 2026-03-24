@@ -3,13 +3,30 @@ import type { CanvasConfig, DesignElement, LayoutMode } from '@renderer/types/de
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
 
-export const generateTemplateCode = (elements: DesignElement[], layoutMode: LayoutMode): string => {
-  const lines = sortByLayer(elements).map((element) => {
-    if (layoutMode === 'grid') {
-      return `  <div class="${element.id}">${element.serial}</div>`
+const indent = (level: number): string => '  '.repeat(level)
+
+const buildTemplateTree = (
+  elements: DesignElement[],
+  parentId: string | null,
+  level: number
+): string[] => {
+  const nodes = sortByLayer(elements).filter((item) => item.parentId === parentId)
+  const lines: string[] = []
+  nodes.forEach((node) => {
+    const children = buildTemplateTree(elements, node.id, level + 1)
+    if (children.length === 0) {
+      lines.push(`${indent(level)}<div class="${node.id}">${node.serial}</div>`)
+      return
     }
-    return `  <div class="${element.id}">${element.serial}</div>`
+    lines.push(`${indent(level)}<div class="${node.id}">`)
+    lines.push(...children)
+    lines.push(`${indent(level)}</div>`)
   })
+  return lines
+}
+
+export const generateTemplateCode = (elements: DesignElement[], layoutMode: LayoutMode): string => {
+  const lines = buildTemplateTree(elements, null, 2)
 
   return [
     '<template>',
@@ -58,8 +75,12 @@ export const generateStyleCode = (
       : ['.canvas-root {', '  position: relative;', '  width: 100%;', '  min-height: 300px;', '}']
 
   const elementStyles = sortByLayer(elements).map((element) => {
+    const parent = element.parentId ? elements.find((item) => item.id === element.parentId) : undefined
+    const relativeX = parent ? element.x - parent.x : element.x
+    const relativeY = parent ? element.y - parent.y : element.y
+
     if (layoutMode === 'grid') {
-      const grid = toGridPlacement(element, canvas.gridSize)
+      const grid = toGridPlacement({ ...element, x: relativeX, y: relativeY }, canvas.gridSize)
       return [
         `.${element.id} {`,
         `  grid-column: ${grid.col} / span ${grid.colSpan};`,
@@ -68,7 +89,9 @@ export const generateStyleCode = (
         `  height: ${element.height}px;`,
         `  background: ${element.background};`,
         `  opacity: ${element.opacity};`,
-        `  z-index: ${element.serial};`,
+        '  display: grid;',
+        `  grid-template-columns: repeat(${Math.max(1, Math.floor(element.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
+        `  grid-template-rows: repeat(${Math.max(1, Math.floor(element.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
         '}'
       ].join('\n')
     }
