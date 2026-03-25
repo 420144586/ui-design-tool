@@ -16,6 +16,15 @@ interface CustomAPI {
     filePath?: string
     content?: string
   }>
+  saveDesignProject: (content: string) => Promise<{
+    canceled: boolean
+    filePath?: string
+  }>
+  loadDesignProject: () => Promise<{
+    canceled: boolean
+    filePath?: string
+    content?: string
+  }>
 }
 
 declare global {

@@ -17,6 +17,7 @@ const DRAG_THRESHOLD_PX = 4
 
 const finishPointerDrag = (event: MouseEvent): void => {
   window.removeEventListener('mouseup', finishPointerDrag, true)
+  store.endLayoutDrag()
   const movedId = movingElementId.value
   movingElementId.value = ''
 
@@ -128,24 +129,13 @@ const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => 
     y: (event.clientY - rect.top) / zoom - element.y
   }
   store.selectElement(element.id)
+  store.startLayoutDrag()
   window.removeEventListener('mouseup', finishPointerDrag, true)
   window.addEventListener('mouseup', finishPointerDrag, true)
 }
 
-const onCanvasClick = (event: MouseEvent): void => {
-  if (suppressNextCanvasClick.value) {
-    suppressNextCanvasClick.value = false
-    return
-  }
-
-  const clickedElement = (event.target as HTMLElement).closest('.designer-element')
-
-  if (!store.activePreset || movingElementId.value) {
-    if (!clickedElement) {
-      store.clearSelection()
-    }
-    return
-  }
+/** 在画布坐标下放置当前激活的预设（元素库 / 含组件） */
+const placeActivePresetAtPointer = (event: MouseEvent): void => {
   const rect = canvasRef.value?.getBoundingClientRect()
   if (!rect) return
   const zoom = store.canvas.zoom
@@ -155,6 +145,8 @@ const onCanvasClick = (event: MouseEvent): void => {
   const hitElementId = hitEl?.dataset.elementId ?? null
 
   const preset = store.activePreset
+  if (!preset) return
+
   if (preset.kind === 'div') {
     store.addElement(
       {
@@ -191,6 +183,7 @@ const onCanvasClick = (event: MouseEvent): void => {
       )
       return
     }
+    store.beginHistoryBatch()
     const container = store.addElement(
       {
         kind: 'image',
@@ -210,6 +203,7 @@ const onCanvasClick = (event: MouseEvent): void => {
       { hitElementId }
     )
     store.rebuildImageChildren(container.id)
+    store.endHistoryBatch()
     return
   }
 
@@ -218,6 +212,7 @@ const onCanvasClick = (event: MouseEvent): void => {
     const h = preset.height
     const x0 = Math.min(Math.max(0, x), store.canvas.width - w)
     const y0 = Math.min(Math.max(0, y), store.canvas.height - h)
+    store.beginHistoryBatch()
     const tableEl = store.addElement(
       {
         kind: 'table',
@@ -237,6 +232,7 @@ const onCanvasClick = (event: MouseEvent): void => {
       { hitElementId }
     )
     store.initTableCells(tableEl.id)
+    store.endHistoryBatch()
     return
   }
 
@@ -271,6 +267,7 @@ const onCanvasClick = (event: MouseEvent): void => {
   const containerX = Math.min(Math.max(0, x), store.canvas.width - containerW)
   const containerY = Math.min(Math.max(0, y), store.canvas.height - containerH)
 
+  store.beginHistoryBatch()
   const container = store.addElement(
     {
       kind: 'column',
@@ -312,6 +309,39 @@ const onCanvasClick = (event: MouseEvent): void => {
       { select: false, parentId: container.id }
     )
   }
+  store.endHistoryBatch()
+}
+
+/**
+ * 子树 designer-element 使用 @click.stop 防止冒泡抢选中，但会导致「在容器内点击放置预设」无法到达 .layer。
+ * 捕获阶段在子节点之前执行，在此处放置预设并阻止传递，即可在任意嵌套内落点。
+ */
+const onLayerPresetClickCapture = (event: MouseEvent): void => {
+  if (!store.activePreset) return
+  if (suppressNextCanvasClick.value) {
+    suppressNextCanvasClick.value = false
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    return
+  }
+  if (movingElementId.value) return
+  placeActivePresetAtPointer(event)
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+}
+
+const onCanvasClick = (event: MouseEvent): void => {
+  if (store.activePreset) return
+
+  if (suppressNextCanvasClick.value) {
+    suppressNextCanvasClick.value = false
+    return
+  }
+
+  const clickedElement = (event.target as HTMLElement).closest('.designer-element')
+  if (!clickedElement) {
+    store.clearSelection()
+  }
 }
 </script>
 
@@ -333,7 +363,12 @@ const onCanvasClick = (event: MouseEvent): void => {
         @mousemove="onMouseMove"
         @mouseleave="onMouseLeave"
       >
-        <div class="layer" :style="layerStyle" @click="onCanvasClick">
+        <div
+          class="layer"
+          :style="layerStyle"
+          @click.capture="onLayerPresetClickCapture"
+          @click="onCanvasClick"
+        >
           <DesignTreeNode
             v-for="element in rootElements"
             :key="element.id"
@@ -368,16 +403,22 @@ const onCanvasClick = (event: MouseEvent): void => {
 
 <style scoped>
 .design-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: safe center;
   width: 100%;
   max-width: 100%;
   height: 100%;
+  min-height: 0;
   overflow: auto;
   padding: 20px 12px 80px;
+  box-sizing: border-box;
   background: #0f131a;
 }
 
 .canvas-wrap {
-  margin: 0 auto;
+  flex-shrink: 0;
   border: 1px solid #2c3342;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }

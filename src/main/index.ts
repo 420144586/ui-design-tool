@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
+const getDesignSavesDir = (): string => join(process.cwd(), 'design-saves')
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -52,6 +54,11 @@ app.whenReady().then(() => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.removeHandler('export-vue-file')
+  ipcMain.removeHandler('export-generated-vue-file')
+  ipcMain.removeHandler('import-vue-file')
+  ipcMain.removeHandler('save-design-project')
+  ipcMain.removeHandler('load-design-project')
   ipcMain.handle('export-vue-file', async (_, payload: { content: string; defaultFileName?: string }) => {
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出 Vue 文件',
@@ -87,6 +94,34 @@ app.whenReady().then(() => {
     const filePath = filePaths[0]
     const content = await readFile(filePath, 'utf-8')
     return { ok: true, canceled: false, filePath, content }
+  })
+
+  ipcMain.handle('save-design-project', async (_, payload: { content: string }) => {
+    const designSavesDir = getDesignSavesDir()
+    await mkdir(designSavesDir, { recursive: true })
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: '保存设计稿',
+      defaultPath: join(designSavesDir, '未命名.design.json'),
+      filters: [{ name: '设计稿 JSON', extensions: ['json'] }]
+    })
+    if (canceled || !filePath) return { canceled: true }
+    await writeFile(filePath, payload.content, 'utf-8')
+    return { canceled: false, filePath }
+  })
+
+  ipcMain.handle('load-design-project', async () => {
+    const designSavesDir = getDesignSavesDir()
+    await mkdir(designSavesDir, { recursive: true })
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '读取设计稿',
+      defaultPath: designSavesDir,
+      properties: ['openFile'],
+      filters: [{ name: '设计稿 JSON', extensions: ['json'] }]
+    })
+    if (canceled || !filePaths?.length) return { canceled: true }
+    const filePath = filePaths[0]
+    const content = await readFile(filePath, 'utf-8')
+    return { canceled: false, filePath, content }
   })
 
   createWindow()

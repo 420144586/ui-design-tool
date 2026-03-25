@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDesignStore } from '@renderer/store/design'
 import CodeView from '@renderer/components/CodeView/CodeView.vue'
@@ -11,9 +11,13 @@ import ImagePresetSettings from '@renderer/components/ImagePresetSettings/ImageP
 import type { LayoutMode, ViewMode } from '@renderer/types/design'
 import { generateVueSfcCode } from '@renderer/utils/codegen'
 import { importVueToDesignElements } from '@renderer/utils/importVue'
+import { parseDesignProjectFile, stringifyDesignProjectFile } from '@renderer/utils/designProjectFile'
 
 const store = useDesignStore()
 const router = useRouter()
+
+const isLoading = ref(false)
+const loadingText = ref('加载中...')
 
 const views: Array<{ key: ViewMode; label: string }> = [
   { key: 'design', label: '设计视图' },
@@ -24,6 +28,34 @@ const views: Array<{ key: ViewMode; label: string }> = [
 
 const setLayoutMode = (mode: LayoutMode): void => store.setLayoutMode(mode)
 const zoomPercent = computed(() => `${Math.round(store.canvas.zoom * 100)}%`)
+
+const canvasPresetKey = computed(() => {
+  const { width, height } = store.canvas
+  if (width === 1920 && height === 1080) return '1920x1080'
+  if (width === 800 && height === 600) return '800x600'
+  return 'custom'
+})
+
+const canvasWInput = ref(store.canvas.width)
+const canvasHInput = ref(store.canvas.height)
+
+watch(
+  () => [store.canvas.width, store.canvas.height] as const,
+  ([w, h]) => {
+    canvasWInput.value = w
+    canvasHInput.value = h
+  }
+)
+
+const onCanvasPresetChange = (event: Event): void => {
+  const v = (event.target as HTMLSelectElement).value
+  if (v === 'custom') return
+  store.setCanvasPreset(v as '1920x1080' | '800x600')
+}
+
+const applyCustomCanvasSize = (): void => {
+  store.setCanvasDimensions(canvasWInput.value, canvasHInput.value)
+}
 
 const exportCurrentAsVue = async (): Promise<void> => {
   const content = generateVueSfcCode(store.elements, store.canvas.layoutMode, {
@@ -45,12 +77,76 @@ const goToTestPage = async (): Promise<void> => {
 }
 
 const importFromVue = async (): Promise<void> => {
-  const result = await window.api.importVueFile()
-  if (!result.ok || !result.content) return
-  const imported = importVueToDesignElements(result.content, store.canvas.gridSize)
-  store.setLayoutMode(imported.layoutMode)
-  store.replaceElements(imported.elements)
-  store.setActiveView('design')
+  try {
+    isLoading.value = true
+    loadingText.value = '正在导入...'
+    const result = await window.api.importVueFile()
+    if (!result.ok || !result.content) return
+    const imported = importVueToDesignElements(result.content, store.canvas.gridSize)
+    store.setLayoutMode(imported.layoutMode)
+    store.replaceElements(imported.elements)
+    store.setActiveView('design')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+type SaveDesignProjectResult = {
+  canceled: boolean
+  filePath?: string
+}
+
+type LoadDesignProjectResult = {
+  canceled: boolean
+  filePath?: string
+  content?: string
+}
+
+const invokeSaveDesignProject = async (content: string): Promise<SaveDesignProjectResult> => {
+  if (typeof window.api?.saveDesignProject === 'function') {
+    return window.api.saveDesignProject(content)
+  }
+  const fallback = await window.electron.ipcRenderer.invoke('save-design-project', { content })
+  return (fallback ?? { canceled: true }) as SaveDesignProjectResult
+}
+
+const invokeLoadDesignProject = async (): Promise<LoadDesignProjectResult> => {
+  if (typeof window.api?.loadDesignProject === 'function') {
+    return window.api.loadDesignProject()
+  }
+  const fallback = await window.electron.ipcRenderer.invoke('load-design-project')
+  return (fallback ?? { canceled: true }) as LoadDesignProjectResult
+}
+
+const saveDesignProject = async (): Promise<void> => {
+  try {
+    isLoading.value = true
+    loadingText.value = '正在保存...'
+    const content = stringifyDesignProjectFile(store.canvas, store.elements, store.nextSerial)
+    const result = await invokeSaveDesignProject(content)
+    if (!result.canceled && result.filePath) {
+      window.alert(`设计稿已保存到：\n${result.filePath}`)
+    }
+  } finally {
+    isLoading.value = false
+  }
+}
+
+const loadDesignProject = async (): Promise<void> => {
+  try {
+    isLoading.value = true
+    loadingText.value = '正在读取设计稿...'
+    const result = await invokeLoadDesignProject()
+    if (result.canceled || !result.content) return
+    const data = parseDesignProjectFile(result.content)
+    if (!data) {
+      window.alert('无法解析设计稿文件，请确认是由本工具保存的 JSON。')
+      return
+    }
+    store.applyDesignProjectFile(data)
+  } finally {
+    isLoading.value = false
+  }
 }
 
 const isTypingInField = (target: EventTarget | null): boolean => {
@@ -65,6 +161,11 @@ const isTypingInField = (target: EventTarget | null): boolean => {
 const onDesignHotkeys = (event: KeyboardEvent): void => {
   if (store.activeView !== 'design') return
   if (isTypingInField(event.target)) return
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
+    event.preventDefault()
+    store.undoDesign()
+    return
+  }
   if (event.key !== 'Delete') return
   event.preventDefault()
   store.deleteSelectedElement()
@@ -105,19 +206,40 @@ onUnmounted(() => {
           <option value="absolute">绝对定位</option>
           <option value="grid">Grid 布局</option>
         </select>
-        <select
-          @change="
-            store.setCanvasPreset(
-              ($event.target as HTMLSelectElement).value as '1920x1080' | '800x600'
-            )
-          "
-        >
-          <option value="1920x1080">1920x1080</option>
-          <option value="800x600">800x600</option>
+        <select class="canvas-preset-select" :value="canvasPresetKey" @change="onCanvasPresetChange">
+          <option value="1920x1080">1920×1080</option>
+          <option value="800x600">800×600</option>
+          <option value="custom">自定义尺寸…</option>
         </select>
+        <div class="canvas-dim-custom" title="自定义画布宽高（像素），修改后点应用">
+          <label class="dim-field">
+            <span>W</span>
+            <input
+              v-model.number="canvasWInput"
+              type="number"
+              min="1"
+              max="16000"
+              class="dim-input"
+            />
+          </label>
+          <span class="dim-mult">×</span>
+          <label class="dim-field">
+            <span>H</span>
+            <input
+              v-model.number="canvasHInput"
+              type="number"
+              min="1"
+              max="16000"
+              class="dim-input"
+            />
+          </label>
+          <button type="button" class="action dim-apply" @click="applyCustomCanvasSize">应用</button>
+        </div>
         <button class="action" @click="store.adjustZoom(-0.1)">-</button>
         <span class="zoom">{{ zoomPercent }}</span>
         <button class="action" @click="store.adjustZoom(0.1)">+</button>
+        <button class="action" type="button" @click="saveDesignProject()">保存设计稿</button>
+        <button class="action" type="button" @click="loadDesignProject()">读取设计稿</button>
         <button class="action" @click="importFromVue()">导入 .vue</button>
         <button class="action export" @click="exportCurrentAsVue()">导出 .vue</button>
       </div>
@@ -133,6 +255,15 @@ onUnmounted(() => {
             <DesignArea />
           </div>
           <footer class="design-toolbar" aria-label="设计工具栏">
+            <button
+              type="button"
+              class="tb-btn"
+              :disabled="!store.canUndoDesign"
+              title="撤销上一步设计操作（Ctrl+Z）"
+              @click="store.undoDesign()"
+            >
+              撤销
+            </button>
             <button
               type="button"
               class="tb-btn"
@@ -168,6 +299,11 @@ onUnmounted(() => {
         />
       </aside>
     </main>
+
+    <div v-if="isLoading" class="global-loading-overlay">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">{{ loadingText }}</div>
+    </div>
   </div>
 </template>
 
@@ -217,8 +353,53 @@ onUnmounted(() => {
 
 .top-right {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
+}
+
+.canvas-preset-select {
+  max-width: 128px;
+}
+
+.canvas-dim-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8b96ac;
+}
+
+.dim-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dim-field span {
+  min-width: 1em;
+}
+
+.dim-input {
+  width: 64px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid #30384a;
+  border-radius: 6px;
+  background: #0f141c;
+  color: #d7deec;
+  font-size: 12px;
+}
+
+.dim-mult {
+  color: #5c6678;
+  user-select: none;
+}
+
+.dim-apply {
+  padding: 4px 10px;
+  flex-shrink: 0;
 }
 
 select,
@@ -329,5 +510,42 @@ select,
 .action.export {
   border-color: #37674e;
   color: #bde8cc;
+}
+
+.global-loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(11, 15, 21, 0.8);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #dde5f3;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #30384a;
+  border-top-color: #4f7cff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+.loading-text {
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

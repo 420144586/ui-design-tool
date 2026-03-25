@@ -22,16 +22,16 @@ const surfaceStyle = computed(() => {
 <style scoped>
 /* :where 降低优先级，便于外部 class 覆盖（属性面板追加的类或项目全局样式） */
 :where(.d-button) {
-  width: 100%;
-  height: 100%;
+  width: 160px;
+  height: 50px;
   box-sizing: border-box;
-  padding: 8px 16px;
-  border-radius: 6px;
-  border: 1px solid #4f7cff;
-  background: linear-gradient(180deg, #5b8cff 0%, #4f7cff 100%);
-  color: #fff;
+  
+  border-radius: 1px;
+  border: 1px solid #93ADC9;
+  background: linear-gradient(180deg, #fff 0%, #ffffff86 100%);
+  color: #575A6E;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 18px;
 }
 </style>
 

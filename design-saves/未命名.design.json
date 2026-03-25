@@ -1,0 +1,14 @@
+{
+  "format": "design-tool-project",
+  "version": 1,
+  "savedAt": "2026-03-25T16:17:38.892Z",
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "gridSize": 10,
+    "layoutMode": "grid",
+    "zoom": 1
+  },
+  "elements": [],
+  "nextSerial": 1
+}

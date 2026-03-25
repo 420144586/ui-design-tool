@@ -7,7 +7,10 @@ const api = {
     electronAPI.ipcRenderer.invoke('export-vue-file', { content, defaultFileName }),
   exportGeneratedVueFile: (content: string) =>
     electronAPI.ipcRenderer.invoke('export-generated-vue-file', { content }),
-  importVueFile: () => electronAPI.ipcRenderer.invoke('import-vue-file')
+  importVueFile: () => electronAPI.ipcRenderer.invoke('import-vue-file'),
+  saveDesignProject: (content: string) =>
+    electronAPI.ipcRenderer.invoke('save-design-project', { content }),
+  loadDesignProject: () => electronAPI.ipcRenderer.invoke('load-design-project')
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

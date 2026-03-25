@@ -1,0 +1,60 @@
+{
+  "format": "design-tool-project",
+  "version": 1,
+  "savedAt": "2026-03-25T16:17:55.386Z",
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "gridSize": 10,
+    "layoutMode": "grid",
+    "zoom": 1
+  },
+  "elements": [
+    {
+      "kind": "div",
+      "type": "div",
+      "name": "Div 300x300",
+      "width": 300,
+      "height": 300,
+      "background": "#ff8f3e",
+      "text": "",
+      "opacity": 0.9,
+      "x": 400,
+      "y": 180,
+      "id": "el-1774455473286-2ac138",
+      "serial": 1,
+      "parentId": null
+    },
+    {
+      "kind": "div",
+      "type": "div",
+      "name": "Div 300x300",
+      "width": 300,
+      "height": 300,
+      "background": "#ff8f3e",
+      "text": "",
+      "opacity": 0.9,
+      "x": 870,
+      "y": 310,
+      "id": "el-1774455473909-2d41cc",
+      "serial": 2,
+      "parentId": null
+    },
+    {
+      "kind": "div",
+      "type": "div",
+      "name": "Div 300x300",
+      "width": 300,
+      "height": 300,
+      "background": "#ff8f3e",
+      "text": "",
+      "opacity": 0.9,
+      "x": 1360,
+      "y": 240,
+      "id": "el-1774455474480-093ce0",
+      "serial": 3,
+      "parentId": null
+    }
+  ],
+  "nextSerial": 4
+}

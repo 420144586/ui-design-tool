@@ -128,6 +128,12 @@ const tableCellChildren = (cell: DesignElement): DesignElement[] =>
     .filter((item) => item.parentId === cell.id)
     .sort((a, b) => a.y - b.y || a.x - b.x)
 
+/** 单元格上默认 stop，否则会拦掉外层表格的 mousedown，表几乎无法拖动；选中整张表时再放开冒泡 */
+const onTableCellSlotMouseDown = (e: MouseEvent): void => {
+  if (props.selectedElementId === props.element.id) return
+  e.stopPropagation()
+}
+
 const childContainerStyle = computed(() => {
   const style: Record<string, string> = {}
   if (children.value.length === 0) return style
@@ -163,7 +169,7 @@ const childContainerStyle = computed(() => {
     :class="{ active: selectedElementId === element.id }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click="emit('select', element.id)"
+    @click.stop="emit('select', element.id)"
   >
     <img class="designer-img" :src="imgSrc" alt="" draggable="false" />
   </div>
@@ -174,7 +180,7 @@ const childContainerStyle = computed(() => {
     :class="{ active: selectedElementId === element.id }"
     :style="{ ...nodeStyle, ...tableStyle }"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click="emit('select', element.id)"
+    @click.stop="emit('select', element.id)"
   >
     <table class="designer-table">
       <tr v-for="ri in tableRows" :key="'tr-' + ri">
@@ -183,7 +189,7 @@ const childContainerStyle = computed(() => {
             v-if="tableCellAt(ri - 1, ci - 1)"
             class="designer-td-slot"
             :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
-            @mousedown.stop
+            @mousedown="onTableCellSlotMouseDown"
             @click.self="emit('select', tableCellAt(ri - 1, ci - 1)!.id)"
           >
             <DesignTreeNode
@@ -210,7 +216,7 @@ const childContainerStyle = computed(() => {
     :class="{ active: selectedElementId === element.id }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click="emit('select', element.id)"
+    @click.stop="emit('select', element.id)"
   >
     <DButton
       v-if="element.componentKey === 'DButton'"
@@ -226,7 +232,7 @@ const childContainerStyle = computed(() => {
     :class="{ active: selectedElementId === element.id }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click="emit('select', element.id)"
+    @click.stop="emit('select', element.id)"
   >
     <span v-if="labelText" class="element-label">{{ labelText }}</span>
 

@@ -7,6 +7,7 @@ import type {
   LayoutMode,
   ViewMode
 } from '@renderer/types/design'
+import type { DesignProjectFileV1 } from '@renderer/utils/designProjectFile'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const isInside = (
@@ -34,6 +35,18 @@ const defaultPreview: DragPreview = {
   height: 100
 }
 
+const DESIGN_HISTORY_MAX = 80
+
+/** Pinia/Vue 下 elements 为 Proxy，structuredClone 会抛错；用 JSON 做深拷贝 */
+const cloneElementsPlain = (elements: DesignElement[]): DesignElement[] =>
+  JSON.parse(JSON.stringify(elements)) as DesignElement[]
+
+export interface DesignHistorySnapshot {
+  elements: DesignElement[]
+  selectedElementId: string
+  nextSerial: number
+}
+
 export const useDesignStore = defineStore('design', {
   state: () => ({
     activeView: 'design' as ViewMode,
@@ -42,13 +55,60 @@ export const useDesignStore = defineStore('design', {
     nextSerial: 1,
     selectedElementId: '' as string,
     dragPreview: { ...defaultPreview },
-    activePreset: null as ElementPreset | null
+    activePreset: null as ElementPreset | null,
+    /** 撤销栈：每条为「该步操作之前」的完整设计快照 */
+    designHistoryPast: [] as DesignHistorySnapshot[],
+    historyMuted: false,
+    historyBatchDepth: 0,
+    layoutDragActive: false,
+    layoutDragHistorySaved: false
   }),
   getters: {
     selectedElement: (state): DesignElement | undefined =>
-      state.elements.find((item) => item.id === state.selectedElementId)
+      state.elements.find((item) => item.id === state.selectedElementId),
+    canUndoDesign: (state): boolean => state.designHistoryPast.length > 0
   },
   actions: {
+    pushDesignHistory(): void {
+      if (this.historyMuted) return
+      const snap: DesignHistorySnapshot = {
+        elements: cloneElementsPlain(this.elements),
+        selectedElementId: this.selectedElementId,
+        nextSerial: this.nextSerial
+      }
+      this.designHistoryPast.push(snap)
+      if (this.designHistoryPast.length > DESIGN_HISTORY_MAX) {
+        this.designHistoryPast.shift()
+      }
+    },
+    /** 将多处 addElement 合并为一步撤销（内部先 push 一次快照） */
+    beginHistoryBatch(): void {
+      if (this.historyBatchDepth === 0) {
+        this.pushDesignHistory()
+      }
+      this.historyBatchDepth += 1
+    },
+    endHistoryBatch(): void {
+      this.historyBatchDepth = Math.max(0, this.historyBatchDepth - 1)
+    },
+    undoDesign(): void {
+      const snap = this.designHistoryPast.pop()
+      if (!snap) return
+      this.historyMuted = true
+      this.elements = cloneElementsPlain(snap.elements)
+      this.selectedElementId = snap.selectedElementId
+      this.nextSerial = snap.nextSerial
+      this.historyMuted = false
+    },
+    /** 画布拖动元素：合并整次拖动为一步撤销 */
+    startLayoutDrag(): void {
+      this.layoutDragActive = true
+      this.layoutDragHistorySaved = false
+    },
+    endLayoutDrag(): void {
+      this.layoutDragActive = false
+      this.layoutDragHistorySaved = false
+    },
     setActiveView(view: ViewMode): void {
       this.activeView = view
     },
@@ -75,13 +135,26 @@ export const useDesignStore = defineStore('design', {
       this.canvas.layoutMode = layoutMode
     },
     setCanvasPreset(preset: '1920x1080' | '800x600'): void {
-      if (preset === '800x600') {
-        this.canvas.width = 800
-        this.canvas.height = 600
-        return
-      }
-      this.canvas.width = 1920
-      this.canvas.height = 1080
+      const w = preset === '800x600' ? 800 : 1920
+      const h = preset === '800x600' ? 600 : 1080
+      if (this.canvas.width === w && this.canvas.height === h) return
+      this.pushDesignHistory()
+      this.canvas.width = w
+      this.canvas.height = h
+    },
+    /** 自定义画布像素尺寸（宽×高），会记入撤销栈 */
+    setCanvasDimensions(width: number, height: number): void {
+      const w = Math.floor(Number(width))
+      const h = Math.floor(Number(height))
+      if (!Number.isFinite(w) || !Number.isFinite(h)) return
+      const min = 1
+      const max = 16000
+      const nw = Math.min(max, Math.max(min, w))
+      const nh = Math.min(max, Math.max(min, h))
+      if (nw === this.canvas.width && nh === this.canvas.height) return
+      this.pushDesignHistory()
+      this.canvas.width = nw
+      this.canvas.height = nh
     },
     setZoom(zoom: number): void {
       this.canvas.zoom = Math.min(2, Math.max(0.25, zoom))
@@ -111,8 +184,16 @@ export const useDesignStore = defineStore('design', {
     },
     addElement(
       element: Omit<DesignElement, 'id' | 'serial' | 'parentId'>,
-      options?: { select?: boolean; parentId?: string | null; hitElementId?: string | null }
+      options?: {
+        select?: boolean
+        parentId?: string | null
+        hitElementId?: string | null
+        skipHistory?: boolean
+      }
     ): DesignElement {
+      if (!options?.skipHistory && this.historyBatchDepth === 0) {
+        this.pushDesignHistory()
+      }
       let parentId: string | null
       if (options?.parentId !== undefined) {
         parentId = options.parentId
@@ -132,14 +213,48 @@ export const useDesignStore = defineStore('design', {
       return nextElement
     },
     replaceElements(elements: DesignElement[]): void {
+      this.pushDesignHistory()
       this.elements = elements
       this.selectedElementId = ''
       const maxSerial = elements.reduce((max, item) => Math.max(max, item.serial), 0)
       this.nextSerial = maxSerial + 1
     },
+    /** 从设计稿文件还原（不记入撤销栈，并清空历史） */
+    applyDesignProjectFile(data: DesignProjectFileV1): void {
+      this.historyMuted = true
+      this.designHistoryPast = []
+      this.historyBatchDepth = 0
+      this.layoutDragActive = false
+      this.layoutDragHistorySaved = false
+      this.elements = cloneElementsPlain(data.elements)
+      const maxSerial = this.elements.reduce((m, e) => Math.max(m, e.serial), 0)
+      const ns = Math.floor(Number(data.nextSerial))
+      this.nextSerial = Number.isFinite(ns) ? Math.max(ns, maxSerial + 1) : maxSerial + 1
+      const c = data.canvas
+      this.canvas = {
+        width: Math.max(1, Math.min(16000, Math.floor(Number(c.width)) || defaultCanvas.width)),
+        height: Math.max(1, Math.min(16000, Math.floor(Number(c.height)) || defaultCanvas.height)),
+        gridSize: Math.max(1, Math.floor(Number(c.gridSize)) || defaultCanvas.gridSize),
+        layoutMode: c.layoutMode === 'absolute' ? 'absolute' : 'grid',
+        zoom: Math.min(2, Math.max(0.25, Number(c.zoom) || 1))
+      }
+      this.selectedElementId = ''
+      this.activePreset = null
+      this.activeView = 'design'
+      this.dragPreview = { ...defaultPreview }
+      this.historyMuted = false
+    },
     updateElement(id: string, payload: Partial<DesignElement>): void {
       const target = this.elements.find((item) => item.id === id)
       if (!target) return
+      if (this.layoutDragActive && (payload.x !== undefined || payload.y !== undefined)) {
+        if (!this.layoutDragHistorySaved) {
+          this.pushDesignHistory()
+          this.layoutDragHistorySaved = true
+        }
+      } else if (!this.layoutDragActive) {
+        this.pushDesignHistory()
+      }
       const oldX = target.x
       const oldY = target.y
       Object.assign(target, payload)
@@ -217,6 +332,7 @@ export const useDesignStore = defineStore('design', {
       if (!child || !parent) return
       if (this.isDescendantOf(childId, newParentId)) return
       if (parent.kind === 'table') return
+      this.pushDesignHistory()
       child.parentId = newParentId
       this.selectedElementId = childId
     },
@@ -269,7 +385,7 @@ export const useDesignStore = defineStore('design', {
               tableCellRow: r,
               tableCellCol: c
             },
-            { select: false, parentId: tableId }
+            { select: false, parentId: tableId, skipHistory: true }
           )
         }
       }
@@ -277,6 +393,7 @@ export const useDesignStore = defineStore('design', {
     rebuildTableCells(tableId: string): void {
       const t = this.elements.find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
+      this.pushDesignHistory()
       const toDrop = new Set<string>()
       const walk = (eid: string): void => {
         toDrop.add(eid)
@@ -292,9 +409,11 @@ export const useDesignStore = defineStore('design', {
     setImageHasLabelForSelectedStyle(id: string, hasLabel: boolean): void {
       const el = this.elements.find((item) => item.id === id)
       if (!el || el.kind !== 'image') return
+      if (el.type === 'img' && !hasLabel) return
+
+      this.pushDesignHistory()
 
       if (el.type === 'img') {
-        if (!hasLabel) return
         const pid = el.parentId
         const { x, y, opacity, imageSrc, name } = el
         this.elements = this.elements.filter((item) => item.id !== el.id)
@@ -314,7 +433,7 @@ export const useDesignStore = defineStore('design', {
             gap: 10,
             imageSrc: imageSrc ?? ''
           },
-          { parentId: pid, select: false }
+          { parentId: pid, select: false, skipHistory: true }
         )
         this.rebuildImageChildren(container.id)
         this.selectedElementId = container.id
@@ -343,7 +462,7 @@ export const useDesignStore = defineStore('design', {
             opacity,
             imageSrc: src
           },
-          { parentId: pid, select: false }
+          { parentId: pid, select: false, skipHistory: true }
         )
         this.selectedElementId = img.id
         return
@@ -361,6 +480,7 @@ export const useDesignStore = defineStore('design', {
     },
     deleteSelectedElement(): void {
       if (!this.selectedElementId) return
+      this.pushDesignHistory()
       const toDrop = new Set<string>()
       const walk = (id: string): void => {
         toDrop.add(id)
@@ -376,19 +496,21 @@ export const useDesignStore = defineStore('design', {
       const { id, serial, parentId, ...rest } = selected
       void id
       void serial
+      this.pushDesignHistory()
       this.addElement(
         {
           ...rest,
           x: rest.x + this.canvas.gridSize,
           y: rest.y + this.canvas.gridSize
         },
-        { parentId: parentId ?? null }
+        { parentId: parentId ?? null, skipHistory: true }
       )
     },
     updateColumnChildCount(containerId: string, nextCount: number): void {
       const container = this.elements.find((item) => item.id === containerId)
       if (!container) return
       if (container.kind !== 'column') return
+      this.pushDesignHistory()
 
       const raw = Math.floor(Number(nextCount))
       const count = Number.isFinite(raw) ? Math.max(1, raw) : 1
@@ -418,7 +540,7 @@ export const useDesignStore = defineStore('design', {
             text: '',
             opacity: 0.8
           },
-          { select: false, parentId: containerId }
+          { select: false, parentId: containerId, skipHistory: true }
         )
       }
 
@@ -462,7 +584,7 @@ export const useDesignStore = defineStore('design', {
           opacity: 1,
           imageSrc: src
         },
-        { select: false, parentId: containerId }
+        { select: false, parentId: containerId, skipHistory: true }
       )
 
       if (has) {
@@ -480,7 +602,7 @@ export const useDesignStore = defineStore('design', {
             text: preservedCaption,
             opacity: 1
           },
-          { select: false, parentId: containerId }
+          { select: false, parentId: containerId, skipHistory: true }
         )
       }
 
