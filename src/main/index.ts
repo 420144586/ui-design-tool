@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -72,6 +72,21 @@ app.whenReady().then(() => {
     await mkdir(generatedDir, { recursive: true })
     await writeFile(targetFilePath, payload.content, 'utf-8')
     return { ok: true, filePath: targetFilePath }
+  })
+  ipcMain.handle('import-vue-file', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: '导入 Vue 文件',
+      properties: ['openFile'],
+      filters: [{ name: 'Vue 文件', extensions: ['vue'] }]
+    })
+
+    if (canceled || filePaths.length === 0) {
+      return { ok: false, canceled: true }
+    }
+
+    const filePath = filePaths[0]
+    const content = await readFile(filePath, 'utf-8')
+    return { ok: true, canceled: false, filePath, content }
   })
 
   createWindow()

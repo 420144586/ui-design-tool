@@ -5,6 +5,16 @@ const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
 
 const indent = (level: number): string => '  '.repeat(level)
 
+const escapeHtml = (s: string): string =>
+  s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+
+const elementHasChildren = (elements: DesignElement[], id: string): boolean =>
+  elements.some((item) => item.parentId === id)
+
 const buildTemplateTree = (
   elements: DesignElement[],
   parentId: string | null,
@@ -13,12 +23,82 @@ const buildTemplateTree = (
   const nodes = sortByLayer(elements).filter((item) => item.parentId === parentId)
   const lines: string[] = []
   nodes.forEach((node) => {
+    if (node.kind === 'image' && node.type === 'img') {
+      const src = escapeHtml((node.imageSrc ?? '').trim())
+      lines.push(`${indent(level)}<img class="${node.id}" src="${src}" alt="" />`)
+      return
+    }
+    if (node.kind === 'image' && node.type === 'div') {
+      const ch = sortByLayer(elements).filter((item) => item.parentId === node.id)
+      const imgEl = ch.find((item) => item.type === 'img')
+      const labelEl = ch.find(
+        (item) => item.type === 'div' && item.name.endsWith('-label')
+      )
+      lines.push(`${indent(level)}<div class="${node.id}">`)
+      if (imgEl) {
+        const src = escapeHtml((imgEl.imageSrc ?? node.imageSrc ?? '').trim())
+        lines.push(`${indent(level + 1)}<img class="${imgEl.id}" src="${src}" alt="" />`)
+      }
+      if (node.hasLabel && labelEl) {
+        const t = labelEl.text.trim()
+        lines.push(
+          `${indent(level + 1)}<div class="${labelEl.id}">${t ? escapeHtml(t) : ''}</div>`
+        )
+      }
+      lines.push(`${indent(level)}</div>`)
+      return
+    }
+    if (node.kind === 'table') {
+      const rows = Math.max(1, Math.floor(Number(node.tableRows) || 5))
+      const cols = Math.max(1, Math.floor(Number(node.tableCols) || 5))
+      lines.push(`${indent(level)}<table class="${node.id}">`)
+      for (let r = 0; r < rows; r += 1) {
+        lines.push(`${indent(level + 1)}<tr>`)
+        for (let c = 0; c < cols; c += 1) {
+          const cell = elements.find(
+            (el) =>
+              el.parentId === node.id &&
+              el.isTableCell &&
+              el.tableCellRow === r &&
+              el.tableCellCol === c
+          )
+          lines.push(`${indent(level + 2)}<td>`)
+          if (cell) {
+            lines.push(...buildTemplateTree(elements, cell.id, level + 3))
+          }
+          lines.push(`${indent(level + 2)}</td>`)
+        }
+        lines.push(`${indent(level + 1)}</tr>`)
+      }
+      lines.push(`${indent(level)}</table>`)
+      return
+    }
+
+    if (node.kind === 'dcomponent') {
+      const key = (node.componentKey ?? '').trim()
+      if (key === 'DButton') {
+        const extra = (node.componentClass ?? '')
+          .trim()
+          .replace(/[^\w\s-]/g, '')
+          .trim()
+        const cls = extra ? `${node.id} ${extra}` : node.id
+        lines.push(`${indent(level)}<DButton class="${cls}" />`)
+      }
+      return
+    }
+
     const children = buildTemplateTree(elements, node.id, level + 1)
+    const label = node.text.trim()
     if (children.length === 0) {
-      lines.push(`${indent(level)}<div class="${node.id}">${node.serial}</div>`)
+      lines.push(
+        `${indent(level)}<div class="${node.id}">${label ? escapeHtml(label) : ''}</div>`
+      )
       return
     }
     lines.push(`${indent(level)}<div class="${node.id}">`)
+    if (label) {
+      lines.push(`${indent(level + 1)}<span class="${node.id}-label">${escapeHtml(label)}</span>`)
+    }
     lines.push(...children)
     lines.push(`${indent(level)}</div>`)
   })
@@ -26,6 +106,7 @@ const buildTemplateTree = (
 }
 
 export const generateTemplateCode = (elements: DesignElement[], layoutMode: LayoutMode): string => {
+  void layoutMode
   const lines = buildTemplateTree(elements, null, 2)
 
   return [
@@ -37,14 +118,24 @@ export const generateTemplateCode = (elements: DesignElement[], layoutMode: Layo
   ].join('\n')
 }
 
-export const generateScriptCode = (): string => {
-  return [
-    '<script setup lang="ts">',
-    "import { ref } from 'vue'",
-    '',
-    "const message = ref('由设计器生成的 Vue 组件')",
-    '</script>'
-  ].join('\n')
+const collectDComponentImports = (elements: DesignElement[]): string[] => {
+  const lines: string[] = []
+  const keys = new Set(
+    elements
+      .filter((e) => e.kind === 'dcomponent')
+      .map((e) => (e.componentKey ?? '').trim())
+      .filter(Boolean)
+  )
+  if (keys.has('DButton')) {
+    lines.push(`import DButton from '@renderer/D-components/DButton.vue'`)
+  }
+  return lines
+}
+
+export const generateScriptCode = (elements: DesignElement[]): string => {
+  const imports = collectDComponentImports(elements)
+  const body = imports.length > 0 ? ['', ...imports, ''] : ['']
+  return ['<script setup lang="ts">', ...body, '</script>'].join('\n')
 }
 
 const toGridPlacement = (element: DesignElement, gridSize: number): { col: number; row: number; colSpan: number; rowSpan: number } => {
@@ -75,12 +166,192 @@ export const generateStyleCode = (
       : ['.canvas-root {', '  position: relative;', '  width: 100%;', '  min-height: 300px;', '}']
 
   const elementStyles = sortByLayer(elements).map((element) => {
+    if (element.isTableCell) {
+      return ''
+    }
     const parent = element.parentId ? elements.find((item) => item.id === element.parentId) : undefined
     const relativeX = parent ? element.x - parent.x : element.x
     const relativeY = parent ? element.y - parent.y : element.y
+    const hasChildren = elementHasChildren(elements, element.id)
+
+    if (element.kind === 'image' && element.type === 'img') {
+      if (layoutMode === 'grid') {
+        const grid = toGridPlacement(
+          { ...element, x: relativeX, y: relativeY },
+          canvas.gridSize
+        )
+        return [
+          `.${element.id} {`,
+          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
+          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  width: ${element.width}px;`,
+          `  height: ${element.height}px;`,
+          `  opacity: ${element.opacity};`,
+          '  object-fit: cover;',
+          '  display: block;',
+          '}'
+        ].join('\n')
+      }
+      return [
+        `.${element.id} {`,
+        '  position: absolute;',
+        `  z-index: ${element.serial};`,
+        `  left: ${relativeX}px;`,
+        `  top: ${relativeY}px;`,
+        `  width: ${element.width}px;`,
+        `  height: ${element.height}px;`,
+        `  opacity: ${element.opacity};`,
+        '  object-fit: cover;',
+        '  display: block;',
+        '}'
+      ].join('\n')
+    }
+
+    if (element.kind === 'image' && element.type === 'div') {
+      const gap = element.gap ?? 10
+      if (layoutMode === 'grid') {
+        const grid = toGridPlacement(
+          { ...element, x: relativeX, y: relativeY },
+          canvas.gridSize
+        )
+        return [
+          `.${element.id} {`,
+          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
+          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  width: ${element.width}px;`,
+          `  height: ${element.height}px;`,
+          `  background: ${element.background};`,
+          `  opacity: ${element.opacity};`,
+          '  position: relative;',
+          '  box-sizing: border-box;',
+          '  display: flex;',
+          '  flex-direction: row;',
+          '  align-items: center;',
+          `  gap: ${gap}px;`,
+          '}'
+        ].join('\n')
+      }
+      return [
+        `.${element.id} {`,
+        '  position: absolute;',
+        `  z-index: ${element.serial};`,
+        `  left: ${relativeX}px;`,
+        `  top: ${relativeY}px;`,
+        `  width: ${element.width}px;`,
+        `  height: ${element.height}px;`,
+        `  background: ${element.background};`,
+        `  opacity: ${element.opacity};`,
+        '  box-sizing: border-box;',
+        '  display: flex;',
+        '  flex-direction: row;',
+        '  align-items: center;',
+        `  gap: ${gap}px;`,
+        '}'
+      ].join('\n')
+    }
+
+    if (element.kind === 'table') {
+      const bc = element.borderColor ?? '#d0d0d0'
+      if (layoutMode === 'grid') {
+        const grid = toGridPlacement(
+          { ...element, x: relativeX, y: relativeY },
+          canvas.gridSize
+        )
+        return [
+          `.${element.id} {`,
+          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
+          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  width: ${element.width}px;`,
+          `  height: ${element.height}px;`,
+          `  background: ${element.background};`,
+          `  opacity: ${element.opacity};`,
+          '  position: relative;',
+          '  border-collapse: collapse;',
+          '  table-layout: fixed;',
+          '  box-sizing: border-box;',
+          '}',
+          `.${element.id} td {`,
+          `  border: 1px solid ${bc};`,
+          '  position: relative;',
+          '  vertical-align: top;',
+          '}'
+        ].join('\n')
+      }
+      return [
+        `.${element.id} {`,
+        '  position: absolute;',
+        `  z-index: ${element.serial};`,
+        `  left: ${relativeX}px;`,
+        `  top: ${relativeY}px;`,
+        `  width: ${element.width}px;`,
+        `  height: ${element.height}px;`,
+        `  background: ${element.background};`,
+        `  opacity: ${element.opacity};`,
+        '  border-collapse: collapse;',
+        '  table-layout: fixed;',
+        '  box-sizing: border-box;',
+        '}',
+        `.${element.id} td {`,
+        `  border: 1px solid ${bc};`,
+        '  position: relative;',
+        '  vertical-align: top;',
+        '}'
+      ].join('\n')
+    }
+
+    if (parent?.kind === 'image' && element.type === 'img') {
+      return [
+        `.${element.id} {`,
+        '  flex: 0 0 auto;',
+        '  width: 30px;',
+        '  height: 30px;',
+        '  object-fit: cover;',
+        '  display: block;',
+        `  opacity: ${element.opacity};`,
+        '}'
+      ].join('\n')
+    }
+
+    if (
+      parent?.kind === 'image' &&
+      parent.hasLabel &&
+      element.type === 'div' &&
+      element.name.endsWith('-label')
+    ) {
+      return [
+        `.${element.id} {`,
+        '  flex: 1 1 auto;',
+        '  min-width: 100px;',
+        '  max-width: none;',
+        '  height: 100%;',
+        '  box-sizing: border-box;',
+        `  background: ${element.background};`,
+        `  opacity: ${element.opacity};`,
+        '  display: flex;',
+        '  align-items: center;',
+        '  justify-content: center;',
+        '}'
+      ].join('\n')
+    }
 
     if (layoutMode === 'grid') {
       const grid = toGridPlacement({ ...element, x: relativeX, y: relativeY }, canvas.gridSize)
+      if (!hasChildren) {
+        return [
+          `.${element.id} {`,
+          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
+          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  width: ${element.width}px;`,
+          `  height: ${element.height}px;`,
+          `  background: ${element.background};`,
+          `  opacity: ${element.opacity};`,
+          '  position: relative;',
+          '  display: flex;',
+          '  align-items: center;',
+          '  justify-content: center;',
+          '}'
+        ].join('\n')
+      }
       return [
         `.${element.id} {`,
         `  grid-column: ${grid.col} / span ${grid.colSpan};`,
@@ -89,6 +360,7 @@ export const generateStyleCode = (
         `  height: ${element.height}px;`,
         `  background: ${element.background};`,
         `  opacity: ${element.opacity};`,
+        '  position: relative;',
         '  display: grid;',
         `  grid-template-columns: repeat(${Math.max(1, Math.floor(element.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
         `  grid-template-rows: repeat(${Math.max(1, Math.floor(element.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
@@ -100,17 +372,38 @@ export const generateStyleCode = (
       `.${element.id} {`,
       '  position: absolute;',
       `  z-index: ${element.serial};`,
-      `  left: ${element.x}px;`,
-      `  top: ${element.y}px;`,
+      `  left: ${relativeX}px;`,
+      `  top: ${relativeY}px;`,
       `  width: ${element.width}px;`,
       `  height: ${element.height}px;`,
       `  background: ${element.background};`,
       `  opacity: ${element.opacity};`,
+      hasChildren ? '' : '  display: flex;',
+      hasChildren ? '' : '  align-items: center;',
+      hasChildren ? '' : '  justify-content: center;',
       '}'
-    ].join('\n')
-  })
+    ]
+      .filter((line) => line !== '')
+      .join('\n')
+  }).filter((block) => block !== '')
 
-  return [...rootStyle, '', ...elementStyles].join('\n')
+  const overlayLabelStyles = sortByLayer(elements)
+    .filter((el) => el.text.trim() && elementHasChildren(elements, el.id))
+    .map((el) =>
+      [
+        `.${el.id}-label {`,
+        '  position: absolute;',
+        '  inset: 0;',
+        '  display: flex;',
+        '  align-items: center;',
+        '  justify-content: center;',
+        '  pointer-events: none;',
+        '  z-index: 1;',
+        '}'
+      ].join('\n')
+    )
+
+  return [...rootStyle, '', ...elementStyles, '', ...overlayLabelStyles].join('\n')
 }
 
 export const generateVueSfcCode = (
@@ -121,7 +414,7 @@ export const generateVueSfcCode = (
   return [
     generateTemplateCode(elements, layoutMode),
     '',
-    generateScriptCode(),
+    generateScriptCode(elements),
     '',
     '<style scoped>',
     generateStyleCode(elements, layoutMode, canvas),

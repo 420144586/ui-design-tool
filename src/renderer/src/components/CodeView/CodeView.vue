@@ -11,7 +11,7 @@ import {
 const store = useDesignStore()
 
 const templateCode = computed(() => generateTemplateCode(store.elements, store.canvas.layoutMode))
-const scriptCode = computed(() => generateScriptCode())
+const scriptCode = computed(() => generateScriptCode(store.elements))
 const styleCode = computed(() =>
   generateStyleCode(store.elements, store.canvas.layoutMode, {
     width: store.canvas.width,

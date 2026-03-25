@@ -5,8 +5,9 @@ import type { ElementPreset } from '@renderer/types/design'
 
 const store = useDesignStore()
 
-const presetElements = ref<ElementPreset[]>([
+const basicPresets = ref<ElementPreset[]>([
   {
+    kind: 'div',
     type: 'div',
     name: 'Div 50x50',
     width: 50,
@@ -16,6 +17,7 @@ const presetElements = ref<ElementPreset[]>([
     opacity: 0.9
   },
   {
+    kind: 'div',
     type: 'div',
     name: 'Div 100x100',
     width: 100,
@@ -25,6 +27,7 @@ const presetElements = ref<ElementPreset[]>([
     opacity: 0.9
   },
   {
+    kind: 'div',
     type: 'div',
     name: 'Div 300x300',
     width: 300,
@@ -32,6 +35,57 @@ const presetElements = ref<ElementPreset[]>([
     background: '#ff8f3e',
     text: '',
     opacity: 0.9
+  },
+  {
+    kind: 'column',
+    type: 'div',
+    name: 'Column 容器',
+    width: 200,
+    height: 400,
+    background: '#7b5cff',
+    text: '',
+    opacity: 0.9,
+    childCount: 8
+  },
+  {
+    kind: 'image',
+    type: 'div',
+    name: 'Image 块',
+    width: 30,
+    height: 30,
+    background: 'transparent',
+    text: '',
+    opacity: 1,
+    hasLabel: false,
+    gap: 10,
+    imageSrc: ''
+  },
+  {
+    kind: 'table',
+    type: 'table',
+    name: 'Table 5×5',
+    width: 250,
+    height: 250,
+    background: '#1a1f2b',
+    text: '',
+    opacity: 1,
+    tableRows: 5,
+    tableCols: 5,
+    borderColor: '#d0d0d0'
+  }
+])
+
+const componentPresets = ref<ElementPreset[]>([
+  {
+    kind: 'dcomponent',
+    type: 'div',
+    name: 'DButton',
+    width: 120,
+    height: 40,
+    background: 'transparent',
+    text: '',
+    opacity: 1,
+    componentKey: 'DButton'
   }
 ])
 
@@ -51,14 +105,34 @@ const selectPreset = (item: ElementPreset): void => {
     <h3>元素库</h3>
     <div class="list">
       <button
-        v-for="element in presetElements"
+        v-for="element in basicPresets"
         :key="element.name"
         class="item"
         :class="{ active: isActive(element) }"
         @click="selectPreset(element)"
       >
         <div class="item-title">{{ element.name }}</div>
-        <div class="item-meta">{{ element.width }} x {{ element.height }}</div>
+        <div class="item-meta">
+          {{ element.width }} × {{ element.height }}
+          <template v-if="element.kind === 'image' && element.hasLabel"> · Label</template>
+          <template v-if="element.kind === 'table'">
+            · {{ element.tableRows }}×{{ element.tableCols }}
+          </template>
+        </div>
+      </button>
+    </div>
+
+    <h3 class="section-title">组件</h3>
+    <div class="list">
+      <button
+        v-for="element in componentPresets"
+        :key="element.name"
+        class="item"
+        :class="{ active: isActive(element) }"
+        @click="selectPreset(element)"
+      >
+        <div class="item-title">{{ element.name }}</div>
+        <div class="item-meta">Vue 组件 · {{ element.width }} × {{ element.height }}</div>
       </button>
     </div>
   </section>
@@ -70,12 +144,19 @@ const selectPreset = (item: ElementPreset): void => {
   padding: 12px;
   border-right: 1px solid #2a2f3a;
   background: #161a22;
+  overflow: auto;
 }
 
 h3 {
   margin: 0 0 12px;
   font-size: 14px;
   color: #c8d0df;
+}
+
+.section-title {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #2a2f3a;
 }
 
 .list {

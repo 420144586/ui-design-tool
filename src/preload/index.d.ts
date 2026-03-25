@@ -10,6 +10,12 @@ interface CustomAPI {
     ok: boolean
     filePath: string
   }>
+  importVueFile: () => Promise<{
+    ok: boolean
+    canceled: boolean
+    filePath?: string
+    content?: string
+  }>
 }
 
 declare global {
