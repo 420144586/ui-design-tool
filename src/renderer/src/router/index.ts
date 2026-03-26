@@ -16,7 +16,7 @@ const router = createRouter({
         {
           path: 'generated',
           name: 'test-generated',
-          component: () => import('@renderer/generated/GeneratedFromDesigner.vue')
+          component: () => import('@renderer/views/TestGeneratedView.vue')
         }
       ]
     }

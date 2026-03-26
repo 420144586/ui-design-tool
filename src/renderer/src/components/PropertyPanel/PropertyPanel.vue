@@ -1,11 +1,62 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useDesignStore } from '@renderer/store/design'
 import type { DesignElement } from '@renderer/types/design'
+import {
+  ANIMATION_PRESET_OPTIONS,
+  ANIMATION_TIMING_OPTIONS,
+  cubicBezierString,
+  generateAnimationStyleBlockForElement
+} from '@renderer/utils/animationCodegen'
+import { generateStyleBlockForElement } from '@renderer/utils/codegen'
+import type { AnimationPreset, AnimationTimingMode } from '@renderer/types/design'
 
 const store = useDesignStore()
 
+const panelTab = ref<'property' | 'css' | 'animation'>('property')
+
 const selected = computed(() => store.selectedElement)
+
+const selectedCssCode = computed(() => {
+  const el = selected.value
+  if (!el) return ''
+  const base = generateStyleBlockForElement(el, store.elements, store.canvas.layoutMode, store.canvas)
+  const anim = generateAnimationStyleBlockForElement(el)
+  return [base, anim].filter(Boolean).join('\n\n')
+})
+
+const animationEnabled = computed({
+  get: () => !!selected.value?.animationEnabled,
+  set: (v: boolean) => {
+    const s = selected.value
+    if (!s) return
+    if (v) {
+      store.updateElement(s.id, {
+        animationEnabled: true,
+        animationTimingMode: 'visible',
+        animationPreset: 'fade',
+        animationDurationMs: 400,
+        animationBezierX1: 0.4,
+        animationBezierY1: 0,
+        animationBezierX2: 0.2,
+        animationBezierY2: 1
+      })
+    } else {
+      store.updateElement(s.id, { animationEnabled: false })
+    }
+  }
+})
+
+const bezierPreview = computed(() => {
+  const el = selected.value
+  if (!el) return ''
+  return cubicBezierString(el)
+})
+
+const timingModeHint = computed(() => {
+  const m = selected.value?.animationTimingMode ?? 'visible'
+  return ANIMATION_TIMING_OPTIONS.find((o) => o.value === m)?.hint ?? ''
+})
 
 const update = <K extends keyof DesignElement>(key: K, value: DesignElement[K]): void => {
   if (!selected.value) return
@@ -179,13 +230,51 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
 <template>
   <section class="panel">
     <h3>属性面板</h3>
-    <div v-if="store.selectedElementIds.length > 1" class="multi-hint">
-      <p>已选中 <strong>{{ store.selectedElementIds.length }}</strong> 个元素。</p>
-      <p class="hint-sub">
-        可一齐拖动；拖入另一元素时可批量设为子元素。属性编辑请先单选一项（Ctrl/⌘ 再点已选项可取消选择）。
-      </p>
-    </div>
-    <template v-else-if="selected">
+    <template v-if="store.selectedElementIds.length === 0">
+      <p class="empty">请选择一个元素后编辑属性（按住 Ctrl 或 ⌘ 可多选）</p>
+    </template>
+    <template v-else>
+      <div class="panel-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="panelTab === 'property'"
+          class="tab-btn"
+          :class="{ active: panelTab === 'property' }"
+          @click="panelTab = 'property'"
+        >
+          属性
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="panelTab === 'css'"
+          class="tab-btn"
+          :class="{ active: panelTab === 'css' }"
+          @click="panelTab = 'css'"
+        >
+          CSS 代码
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="panelTab === 'animation'"
+          class="tab-btn"
+          :class="{ active: panelTab === 'animation' }"
+          @click="panelTab = 'animation'"
+        >
+          动画
+        </button>
+      </div>
+
+      <div v-if="panelTab === 'property'">
+        <div v-if="store.selectedElementIds.length > 1" class="multi-hint">
+          <p>已选中 <strong>{{ store.selectedElementIds.length }}</strong> 个元素。</p>
+          <p class="hint-sub">
+            可一齐拖动；拖入另一元素时可批量设为子元素。属性编辑请先单选一项（Ctrl/⌘ 再点已选项可取消选择）。
+          </p>
+        </div>
+        <template v-else-if="selected">
       <label v-if="!isDComponent">
         文本
         <input
@@ -319,7 +408,22 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
             @input="update('borderRadius', Number(($event.target as HTMLInputElement).value))"
           />
         </label>
-        
+        <label>
+          盒模型 (box-sizing)
+          <select
+            :value="selected.boxSizing ?? 'border-box'"
+            class="common-select"
+            @change="
+              update(
+                'boxSizing',
+                ($event.target as HTMLSelectElement).value as 'content-box' | 'border-box'
+              )
+            "
+          >
+            <option value="border-box">border-box（边框计入宽高，不易超出父容器）</option>
+            <option value="content-box">content-box（边框额外占空间）</option>
+          </select>
+        </label>
         <label>
           边框样式
           <select
@@ -565,8 +669,165 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         </label>
       </template>
       </div>
+        </template>
+      </div>
+
+      <div v-else-if="panelTab === 'css'" class="css-tab">
+        <div v-if="store.selectedElementIds.length > 1" class="multi-hint">
+          <p>已选中 <strong>{{ store.selectedElementIds.length }}</strong> 个元素。</p>
+          <p class="hint-sub">请单选一项后再查看该元素的 CSS 代码。</p>
+        </div>
+        <template v-else-if="selected">
+          <p v-if="selected.isTableCell" class="css-cell-hint">
+            表格单元格在导出样式中无独立规则，由父级 <code>table</code> 与 <code>td</code> 选择器统一生成。
+          </p>
+          <pre v-else class="css-code-block">{{ selectedCssCode || '（无）' }}</pre>
+        </template>
+      </div>
+
+      <div v-else-if="panelTab === 'animation'" class="animation-tab">
+        <div v-if="store.selectedElementIds.length > 1" class="multi-hint">
+          <p>已选中 <strong>{{ store.selectedElementIds.length }}</strong> 个元素。</p>
+          <p class="hint-sub">请单选一项后再配置动画。</p>
+        </div>
+        <template v-else-if="selected">
+          <p v-if="selected.isTableCell" class="css-cell-hint">
+            表格单元格不单独包 Transition，请对父级表格或其它容器启用动画。
+          </p>
+          <template v-else>
+            <label class="check anim-enable">
+              <input type="checkbox" v-model="animationEnabled" />
+              启用动画
+            </label>
+            <div v-if="animationEnabled" class="style-group">
+              <div class="group-title">时机与类型</div>
+              <label>
+                渲染时机
+                <select
+                  class="common-select"
+                  :value="selected.animationTimingMode ?? 'visible'"
+                  @change="
+                    update(
+                      'animationTimingMode',
+                      ($event.target as HTMLSelectElement).value as AnimationTimingMode
+                    )
+                  "
+                >
+                  <option
+                    v-for="o in ANIMATION_TIMING_OPTIONS"
+                    :key="o.value"
+                    :value="o.value"
+                  >
+                    {{ o.label }}
+                  </option>
+                </select>
+              </label>
+              <p v-if="timingModeHint" class="field-hint">{{ timingModeHint }}</p>
+              <label>
+                动画类型
+                <select
+                  class="common-select"
+                  :value="selected.animationPreset ?? 'fade'"
+                  @change="
+                    update(
+                      'animationPreset',
+                      ($event.target as HTMLSelectElement).value as AnimationPreset
+                    )
+                  "
+                >
+                  <option
+                    v-for="o in ANIMATION_PRESET_OPTIONS"
+                    :key="o.value"
+                    :value="o.value"
+                  >
+                    {{ o.label }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                时长 (ms)
+                <input
+                  type="number"
+                  min="50"
+                  step="50"
+                  :value="selected.animationDurationMs ?? 400"
+                  @input="
+                    update(
+                      'animationDurationMs',
+                      Math.max(50, Math.floor(Number(($event.target as HTMLInputElement).value) || 400))
+                    )
+                  "
+                />
+              </label>
+            </div>
+            <div v-if="animationEnabled" class="style-group">
+              <div class="group-title">贝塞尔曲线 (cubic-bezier)</div>
+              <p class="field-hint">用于 transition / animation 的缓动，数值范围约 0～1（控制点可略超出）。当前：{{ bezierPreview }}</p>
+              <div class="row-inputs">
+                <label class="half">
+                  x1
+                  <input
+                    type="number"
+                    step="0.01"
+                    :value="selected.animationBezierX1 ?? 0.4"
+                    @input="
+                      update(
+                        'animationBezierX1',
+                        Number(($event.target as HTMLInputElement).value)
+                      )
+                    "
+                  />
+                </label>
+                <label class="half">
+                  y1
+                  <input
+                    type="number"
+                    step="0.01"
+                    :value="selected.animationBezierY1 ?? 0"
+                    @input="
+                      update(
+                        'animationBezierY1',
+                        Number(($event.target as HTMLInputElement).value)
+                      )
+                    "
+                  />
+                </label>
+              </div>
+              <div class="row-inputs">
+                <label class="half">
+                  x2
+                  <input
+                    type="number"
+                    step="0.01"
+                    :value="selected.animationBezierX2 ?? 0.2"
+                    @input="
+                      update(
+                        'animationBezierX2',
+                        Number(($event.target as HTMLInputElement).value)
+                      )
+                    "
+                  />
+                </label>
+                <label class="half">
+                  y2
+                  <input
+                    type="number"
+                    step="0.01"
+                    :value="selected.animationBezierY2 ?? 1"
+                    @input="
+                      update(
+                        'animationBezierY2',
+                        Number(($event.target as HTMLInputElement).value)
+                      )
+                    "
+                  />
+                </label>
+              </div>
+            </div>
+          </template>
+        </template>
+      </div>
     </template>
-    <p v-else class="empty">请选择一个元素后编辑属性（按住 Ctrl 或 ⌘ 可多选）</p>
   </section>
 </template>
 
@@ -651,6 +912,81 @@ h3 {
   margin: 0 0 12px;
   font-size: 14px;
   color: #c8d0df;
+}
+
+.panel-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 3px;
+  background: #0f141c;
+  border-radius: 8px;
+  border: 1px solid #2a3140;
+}
+
+.tab-btn {
+  padding: 6px 6px;
+  font-size: 11px;
+  color: #8b96ac;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.tab-btn:hover {
+  color: #c8d0df;
+  background: #1a2230;
+}
+
+.tab-btn.active {
+  color: #e8efff;
+  background: #2a3548;
+  box-shadow: 0 0 0 1px #4f7cff55;
+}
+
+.css-tab,
+.animation-tab {
+  min-height: 120px;
+}
+
+.anim-enable {
+  margin-bottom: 4px;
+}
+
+.css-code-block {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #c8d0df;
+  background: #0f141c;
+  border: 1px solid #2f3748;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+}
+
+.css-cell-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #a5b2ca;
+}
+
+.css-cell-hint code {
+  font-size: 11px;
+  padding: 1px 4px;
+  background: #1a2230;
+  border-radius: 4px;
+  color: #d7deec;
 }
 
 label {

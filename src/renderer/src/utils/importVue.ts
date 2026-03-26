@@ -48,11 +48,16 @@ export const importVueToDesignElements = (
   const style = readBlock(vueContent, 'style')
   const cssRules = parseStyleRules(style)
   const rootRule = cssRules['canvas-root'] ?? {}
-  const isGrid = rootRule.display === 'grid'
+  const hasGridFromRoot = rootRule.display === 'grid'
+  const hasGridFromElements = Object.values(cssRules).some(
+    (r) => Boolean(r['grid-column'] || r['grid-row'])
+  )
+  const isGrid = hasGridFromRoot || hasGridFromElements
   const layoutMode: LayoutMode = isGrid ? 'grid' : 'absolute'
 
   const parser = new DOMParser()
   const doc = parser.parseFromString(`<wrapper>${template}</wrapper>`, 'text/html')
+  /** 导出已去掉 canvas-root，仅 wrapper；旧文件可能仍含 .canvas-root */
   const rootSection = doc.querySelector('.canvas-root') ?? doc.querySelector('wrapper')
   const elements: DesignElement[] = []
   let serial = 1

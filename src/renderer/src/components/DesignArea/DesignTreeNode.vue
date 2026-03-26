@@ -48,6 +48,7 @@ const imgSrc = computed(
 
 const nodeStyle = computed(() => {
   const commonStyle: Record<string, string> = {}
+  commonStyle.boxSizing = props.element.boxSizing === 'content-box' ? 'content-box' : 'border-box'
   if (props.element.color) commonStyle.color = props.element.color
   if (props.element.fontSize) commonStyle.fontSize = `${props.element.fontSize}px`
   if (props.element.fontWeight) commonStyle.fontWeight = props.element.fontWeight
@@ -72,7 +73,6 @@ const nodeStyle = computed(() => {
       style.maxWidth = 'none'
       style.width = 'auto'
       style.height = '100%'
-      style.boxSizing = 'border-box'
       style.background = cssBackgroundFill(props.element)
       style.opacity = String(props.element.opacity)
       style.display = 'flex'
@@ -95,7 +95,6 @@ const nodeStyle = computed(() => {
     style.display = 'flex'
     style.alignItems = 'center'
     style.justifyContent = 'center'
-    style.boxSizing = 'border-box'
     style.height = 'auto'
     style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
     style.opacity = String(props.element.opacity)

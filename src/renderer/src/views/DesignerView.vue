@@ -234,7 +234,7 @@ onUnmounted(() => {
         <span class="title">Electron-Vite H5 Vue 设计工具</span>
       </div>
       <div class="top-center">
-        <button class="tab" @click="goToTestPage">测试页面</button>
+        <button class="tab" @click="goToTestPage">预览</button>
         <button
           v-for="tab in views"
           :key="tab.key"

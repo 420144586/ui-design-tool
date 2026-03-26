@@ -2,6 +2,19 @@ export type LayoutMode = 'absolute' | 'grid'
 
 export type ViewMode = 'design' | 'template' | 'script' | 'style'
 
+/** 动画与 Vue Transition 的衔接方式（导出代码） */
+export type AnimationTimingMode = 'visible' | 'hidden' | 'v-if' | 'v-show'
+
+/** 内置动画预设（生成 CSS 与 Transition 类名） */
+export type AnimationPreset =
+  | 'fade'
+  | 'slide'
+  | 'slide-left'
+  | 'zoom'
+  | 'bounce'
+  | 'elastic'
+  | 'flip'
+
 export interface CanvasConfig {
   width: number
   height: number
@@ -64,6 +77,8 @@ export interface DesignElement {
   textAlign?: 'left' | 'center' | 'right'
   /** 圆角 */
   borderRadius?: number
+  /** 盒模型：border-box 时边框计入宽高，不易撑出父容器；未设置时设计器按 border-box 渲染 */
+  boxSizing?: 'content-box' | 'border-box'
   /** 边框宽度 */
   borderWidth?: number
   /** 边框样式 */
@@ -77,6 +92,19 @@ export interface DesignElement {
   layoutCenterHorizontal?: boolean
   /** 在父容器内垂直居中（absolute：top:50%+translateY；grid：align-self） */
   layoutCenterVertical?: boolean
+  /** 是否启用导出动画（Vue Transition + CSS） */
+  animationEnabled?: boolean
+  /** 动画触发方式：visible=appear 入场；hidden/v-if/v-show 与脚本 animShow 联动 */
+  animationTimingMode?: AnimationTimingMode
+  /** 动画预设类型 */
+  animationPreset?: AnimationPreset
+  /** 动画时长 ms */
+  animationDurationMs?: number
+  /** cubic-bezier 控制点 */
+  animationBezierX1?: number
+  animationBezierY1?: number
+  animationBezierX2?: number
+  animationBezierY2?: number
 }
 
 export type PresetKind = 'div' | 'column' | 'image' | 'table' | 'dcomponent'
