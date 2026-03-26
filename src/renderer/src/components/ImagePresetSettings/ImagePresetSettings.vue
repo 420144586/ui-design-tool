@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { useDesignStore } from '@renderer/store/design'
 import type { ImagePreset } from '@renderer/types/design'
 
@@ -49,11 +50,10 @@ const setGap = (value: number): void => {
       </label>
       <label>
         元素间距 gap（px）
-        <input
-          type="number"
-          min="0"
-          :value="imagePreset.gap"
-          @change="setGap(Number(($event.target as HTMLInputElement).value))"
+        <NumericInput
+          :model-value="imagePreset.gap ?? 10"
+          :min="0"
+          @update:model-value="setGap($event)"
         />
       </label>
       <div class="hint">左侧图为 30×30；带 Label 时右侧 div 最小宽度 100、最大宽度由 flex 决定。</div>

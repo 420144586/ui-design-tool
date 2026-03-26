@@ -8,6 +8,7 @@ import {
   cubicBezierString,
   generateAnimationStyleBlockForElement
 } from '@renderer/utils/animationCodegen'
+import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { generateStyleBlockForElement } from '@renderer/utils/codegen'
 import type { AnimationPreset, AnimationTimingMode } from '@renderer/types/design'
 
@@ -17,10 +18,21 @@ const panelTab = ref<'property' | 'css' | 'animation'>('property')
 
 const selected = computed(() => store.selectedElement)
 
+const canvasForStyleCodegen = computed(() => ({
+  ...store.canvas,
+  width: store.designSurfaceWidth,
+  height: store.designSurfaceHeight
+}))
+
 const selectedCssCode = computed(() => {
   const el = selected.value
   if (!el) return ''
-  const base = generateStyleBlockForElement(el, store.elements, store.canvas.layoutMode, store.canvas)
+  const base = generateStyleBlockForElement(
+    el,
+    store.elements,
+    store.canvas.layoutMode,
+    canvasForStyleCodegen.value
+  )
   const anim = generateAnimationStyleBlockForElement(el)
   return [base, anim].filter(Boolean).join('\n\n')
 })
@@ -287,37 +299,51 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         <div class="row-inputs">
           <label class="half">
             X
-            <input
-              type="number"
-              :value="selected.x"
-              @input="update('x', Number(($event.target as HTMLInputElement).value))"
-            />
+            <NumericInput :model-value="selected.x" @update:model-value="update('x', $event)" />
           </label>
           <label class="half">
             Y
-            <input
-              type="number"
-              :value="selected.y"
-              @input="update('y', Number(($event.target as HTMLInputElement).value))"
-            />
+            <NumericInput :model-value="selected.y" @update:model-value="update('y', $event)" />
           </label>
         </div>
-        <div class="row-inputs">
-          <label class="half">
-            宽度
-            <input
-              type="number"
-              :value="selected.width"
-              @input="update('width', Number(($event.target as HTMLInputElement).value))"
-            />
+        <div class="row-inputs row-dimensions">
+          <label class="half dim-field">
+            <span class="dim-label">宽度</span>
+            <div class="dim-input-with-pct">
+              <NumericInput
+                :model-value="selected.width"
+                :min="0"
+                :max="selected.widthIsPercent ? 10000 : 16000"
+                @update:model-value="update('width', $event)"
+              />
+              <label class="pct-toggle" title="勾选后以百分比为单位（相对父内容宽度；根级相对设计表面宽度）">
+                <input
+                  type="checkbox"
+                  :checked="!!selected.widthIsPercent"
+                  @change="update('widthIsPercent', ($event.target as HTMLInputElement).checked)"
+                />
+                <span>%</span>
+              </label>
+            </div>
           </label>
-          <label class="half">
-            高度
-            <input
-              type="number"
-              :value="selected.height"
-              @input="update('height', Number(($event.target as HTMLInputElement).value))"
-            />
+          <label class="half dim-field">
+            <span class="dim-label">高度</span>
+            <div class="dim-input-with-pct">
+              <NumericInput
+                :model-value="selected.height"
+                :min="0"
+                :max="selected.heightIsPercent ? 10000 : 16000"
+                @update:model-value="update('height', $event)"
+              />
+              <label class="pct-toggle" title="勾选后以百分比为单位（相对父内容高度；根级相对设计表面高度）">
+                <input
+                  type="checkbox"
+                  :checked="!!selected.heightIsPercent"
+                  @change="update('heightIsPercent', ($event.target as HTMLInputElement).checked)"
+                />
+                <span>%</span>
+              </label>
+            </div>
           </label>
         </div>
       </div>
@@ -327,10 +353,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         <div class="row-inputs">
           <label class="half">
             字体大小
-            <input
-              type="number"
-              :value="selected.fontSize ?? 12"
-              @input="update('fontSize', Number(($event.target as HTMLInputElement).value))"
+            <NumericInput
+              :model-value="selected.fontSize ?? 12"
+              :min="1"
+              @update:model-value="update('fontSize', $event)"
             />
           </label>
           <label class="half">
@@ -391,21 +417,19 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         <div class="group-title">外观</div>
         <label>
           透明度 (0-1)
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="1"
-            :value="selected.opacity ?? 1"
-            @input="update('opacity', Number(($event.target as HTMLInputElement).value))"
+          <NumericInput
+            :model-value="selected.opacity ?? 1"
+            :min="0"
+            :max="1"
+            @update:model-value="update('opacity', $event)"
           />
         </label>
         <label>
           圆角 (px)
-          <input
-            type="number"
-            :value="selected.borderRadius ?? 0"
-            @input="update('borderRadius', Number(($event.target as HTMLInputElement).value))"
+          <NumericInput
+            :model-value="selected.borderRadius ?? 0"
+            :min="0"
+            @update:model-value="update('borderRadius', $event)"
           />
         </label>
         <label>
@@ -440,10 +464,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         <div class="row-inputs" v-if="selected.borderStyle && selected.borderStyle !== 'none'">
           <label class="half">
             边框宽度
-            <input
-              type="number"
-              :value="selected.borderWidth ?? 1"
-              @input="update('borderWidth', Number(($event.target as HTMLInputElement).value))"
+            <NumericInput
+              :model-value="selected.borderWidth ?? 1"
+              :min="0"
+              @update:model-value="update('borderWidth', $event)"
             />
           </label>
           <label class="half">
@@ -523,10 +547,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
           </select>
           <label v-if="gradientType === 'linear'" class="angle-label">
             角度 (deg)
-            <input
-              type="number"
-              v-model.number="gradientAngle"
-              class="angle-input"
+            <NumericInput
+              :model-value="gradientAngle"
+              input-class="angle-input"
+              @update:model-value="(v) => (gradientAngle = v)"
             />
           </label>
           <div class="gradient-colors">
@@ -570,11 +594,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         <div class="group-title">组件特有属性</div>
         <label v-if="isColumnContainer">
         子元素数量
-        <input
-          type="number"
-          min="1"
-          :value="selected.childCount ?? 1"
-          @change="setColumnChildCount(Number(($event.target as HTMLInputElement).value))"
+        <NumericInput
+          :model-value="selected.childCount ?? 1"
+          :min="1"
+          @update:model-value="setColumnChildCount($event)"
         />
       </label>
       <template v-if="isImageStandalone">
@@ -597,24 +620,18 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
       <template v-else-if="isTable">
         <label>
           行数
-          <input
-            type="number"
-            min="1"
-            :value="selected.tableRows ?? 5"
-            @input="
-              update('tableRows', Number(($event.target as HTMLInputElement).value))
-            "
+          <NumericInput
+            :model-value="selected.tableRows ?? 5"
+            :min="1"
+            @update:model-value="update('tableRows', Math.max(1, Math.floor($event)))"
           />
         </label>
         <label>
           列数
-          <input
-            type="number"
-            min="1"
-            :value="selected.tableCols ?? 5"
-            @input="
-              update('tableCols', Number(($event.target as HTMLInputElement).value))
-            "
+          <NumericInput
+            :model-value="selected.tableCols ?? 5"
+            :min="1"
+            @update:model-value="update('tableCols', Math.max(1, Math.floor($event)))"
           />
         </label>
         <label>
@@ -653,11 +670,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
         </label>
         <label>
           元素间距 gap（px）
-          <input
-            type="number"
-            min="0"
-            :value="selected.gap ?? 10"
-            @change="setImageGap(Number(($event.target as HTMLInputElement).value))"
+          <NumericInput
+            :model-value="selected.gap ?? 10"
+            :min="0"
+            @update:model-value="setImageGap($event)"
           />
         </label>
         <label>
@@ -746,17 +762,10 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
               </label>
               <label>
                 时长 (ms)
-                <input
-                  type="number"
-                  min="50"
-                  step="50"
-                  :value="selected.animationDurationMs ?? 400"
-                  @input="
-                    update(
-                      'animationDurationMs',
-                      Math.max(50, Math.floor(Number(($event.target as HTMLInputElement).value) || 400))
-                    )
-                  "
+                <NumericInput
+                  :model-value="selected.animationDurationMs ?? 400"
+                  :min="50"
+                  @update:model-value="update('animationDurationMs', Math.max(50, Math.floor($event)))"
                 />
               </label>
             </div>
@@ -766,60 +775,32 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
               <div class="row-inputs">
                 <label class="half">
                   x1
-                  <input
-                    type="number"
-                    step="0.01"
-                    :value="selected.animationBezierX1 ?? 0.4"
-                    @input="
-                      update(
-                        'animationBezierX1',
-                        Number(($event.target as HTMLInputElement).value)
-                      )
-                    "
+                  <NumericInput
+                    :model-value="selected.animationBezierX1 ?? 0.4"
+                    @update:model-value="update('animationBezierX1', $event)"
                   />
                 </label>
                 <label class="half">
                   y1
-                  <input
-                    type="number"
-                    step="0.01"
-                    :value="selected.animationBezierY1 ?? 0"
-                    @input="
-                      update(
-                        'animationBezierY1',
-                        Number(($event.target as HTMLInputElement).value)
-                      )
-                    "
+                  <NumericInput
+                    :model-value="selected.animationBezierY1 ?? 0"
+                    @update:model-value="update('animationBezierY1', $event)"
                   />
                 </label>
               </div>
               <div class="row-inputs">
                 <label class="half">
                   x2
-                  <input
-                    type="number"
-                    step="0.01"
-                    :value="selected.animationBezierX2 ?? 0.2"
-                    @input="
-                      update(
-                        'animationBezierX2',
-                        Number(($event.target as HTMLInputElement).value)
-                      )
-                    "
+                  <NumericInput
+                    :model-value="selected.animationBezierX2 ?? 0.2"
+                    @update:model-value="update('animationBezierX2', $event)"
                   />
                 </label>
                 <label class="half">
                   y2
-                  <input
-                    type="number"
-                    step="0.01"
-                    :value="selected.animationBezierY2 ?? 1"
-                    @input="
-                      update(
-                        'animationBezierY2',
-                        Number(($event.target as HTMLInputElement).value)
-                      )
-                    "
+                  <NumericInput
+                    :model-value="selected.animationBezierY2 ?? 1"
+                    @update:model-value="update('animationBezierY2', $event)"
                   />
                 </label>
               </div>
@@ -888,6 +869,46 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
   flex: 1;
   min-width: 0;
   margin-bottom: 0;
+}
+
+.dim-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dim-label {
+  font-size: 11px;
+  color: #8b96ac;
+}
+
+.dim-input-with-pct {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.dim-input-with-pct :deep(.numeric-input) {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.pct-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #a8b0c2;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.pct-toggle input {
+  margin: 0;
+  cursor: pointer;
 }
 
 .common-select {

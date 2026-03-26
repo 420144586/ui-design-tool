@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { useDesignStore } from '@renderer/store/design'
 import type { ColumnPreset } from '@renderer/types/design'
 
@@ -37,26 +38,18 @@ const setChildCount = (value: number): void => {
     <div v-if="columnPreset" class="form">
       <label>
         宽度（px）
-        <input
-          type="number"
-          :value="columnPreset.width"
-          @change="setWidth(Number(($event.target as HTMLInputElement).value))"
-        />
+        <NumericInput :model-value="columnPreset.width" :min="1" @update:model-value="setWidth($event)" />
       </label>
       <label>
         高度（px）
-        <input
-          type="number"
-          :value="columnPreset.height"
-          @change="setHeight(Number(($event.target as HTMLInputElement).value))"
-        />
+        <NumericInput :model-value="columnPreset.height" :min="1" @update:model-value="setHeight($event)" />
       </label>
       <label>
         子元素数量
-        <input
-          type="number"
-          :value="columnPreset.childCount"
-          @change="setChildCount(Number(($event.target as HTMLInputElement).value))"
+        <NumericInput
+          :model-value="columnPreset.childCount"
+          :min="1"
+          @update:model-value="setChildCount($event)"
         />
       </label>
       <div class="hint">激活后点击设计视图即可按此配置添加 Column。</div>

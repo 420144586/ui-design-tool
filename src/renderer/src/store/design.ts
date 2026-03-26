@@ -5,7 +5,10 @@ import type {
   DragPreview,
   ElementPreset,
   LayoutMode,
-  ViewMode
+  ViewMode,
+  VirtualEnvConfig,
+  VirtualEnvPosition,
+  WorkspaceMode
 } from '@renderer/types/design'
 import type { DesignProjectFileV1 } from '@renderer/utils/designProjectFile'
 import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
@@ -36,6 +39,31 @@ const defaultPreview: DragPreview = {
   height: 100
 }
 
+/** 尺寸字段与 canvas 同步；展示以 canvas 为准 */
+const defaultVirtualEnv = (): VirtualEnvConfig => ({
+  width: 1920,
+  height: 1080,
+  background: '#0f131a',
+  position: 'relative',
+  presetTitleBar: true,
+  presetFooter: true,
+  presetTitleBarPosition: 'absolute',
+  presetFooterPosition: 'absolute',
+  presetTitleBarHeight: 36,
+  presetFooterHeight: 44
+})
+
+function clampVirtualChromeHeight(n: unknown, fallback: number): number {
+  const x = Math.floor(Number(n))
+  if (!Number.isFinite(x)) return fallback
+  return Math.min(400, Math.max(8, x))
+}
+
+function normalizeVirtualEnvPosition(p: unknown): VirtualEnvPosition {
+  if (p === 'absolute' || p === 'fixed' || p === 'static' || p === 'relative') return p
+  return 'relative'
+}
+
 const DESIGN_HISTORY_MAX = 80
 
 /** Pinia/Vue 下 elements 为 Proxy，structuredClone 会抛错；用 JSON 做深拷贝 */
@@ -52,46 +80,106 @@ export const useDesignStore = defineStore('design', {
   state: () => ({
     activeView: 'design' as ViewMode,
     canvas: { ...defaultCanvas },
-    elements: [] as DesignElement[],
-    nextSerial: 1,
+    /** 标准工作区设计数据（保存/导出/导入的权威来源） */
+    standardElements: [] as DesignElement[],
+    standardNextSerial: 1,
+    standardDesignHistoryPast: [] as DesignHistorySnapshot[],
+    /** 虚拟环境独立副本：进入虚拟环境时从标准深拷贝，编辑不影响标准 */
+    virtualElements: [] as DesignElement[],
+    virtualNextSerial: 1,
+    virtualDesignHistoryPast: [] as DesignHistorySnapshot[],
     selectedElementIds: [] as string[],
     dragPreview: { ...defaultPreview },
     activePreset: null as ElementPreset | null,
-    /** 撤销栈：每条为「该步操作之前」的完整设计快照 */
-    designHistoryPast: [] as DesignHistorySnapshot[],
     historyMuted: false,
     historyBatchDepth: 0,
     layoutDragActive: false,
-    layoutDragHistorySaved: false
+    layoutDragHistorySaved: false,
+    workspaceMode: 'standard' as WorkspaceMode,
+    virtualEnv: defaultVirtualEnv()
   }),
   getters: {
     /** 与单选兼容：取最后一次点击（多选时为主编辑项） */
     selectedElementId: (state): string => state.selectedElementIds.at(-1) ?? '',
-    selectedElement: (state): DesignElement | undefined =>
-      state.elements.find((item) => item.id === (state.selectedElementIds.at(-1) ?? '')),
+    /** 当前工作区下的元素列表（标准 / 虚拟互不覆盖） */
+    elements: (state): DesignElement[] =>
+      state.workspaceMode === 'virtual-env' ? state.virtualElements : state.standardElements,
+    nextSerial: (state): number =>
+      state.workspaceMode === 'virtual-env' ? state.virtualNextSerial : state.standardNextSerial,
+    /** 标准工作区元素（保存设计稿、导出 Vue 等使用） */
+    canonicalElements: (state): DesignElement[] => state.standardElements,
+    canonicalNextSerial: (state): number => state.standardNextSerial,
+    selectedElement: (state): DesignElement | undefined => {
+      const els =
+        state.workspaceMode === 'virtual-env' ? state.virtualElements : state.standardElements
+      return els.find((item) => item.id === (state.selectedElementIds.at(-1) ?? ''))
+    },
     /** 当前选中项是否有可切换到的父节点（数据中存在且 id 有效） */
     canSelectParent: (state): boolean => {
+      const els =
+        state.workspaceMode === 'virtual-env' ? state.virtualElements : state.standardElements
       const sid = state.selectedElementIds.at(-1) ?? ''
       if (!sid) return false
-      const el = state.elements.find((item) => item.id === sid)
+      const el = els.find((item) => item.id === sid)
       const pid = el?.parentId
       if (pid == null || pid === '') return false
-      return state.elements.some((item) => item.id === pid)
+      return els.some((item) => item.id === pid)
     },
-    canUndoDesign: (state): boolean => state.designHistoryPast.length > 0,
-    hasSelection: (state): boolean => state.selectedElementIds.length > 0
+    canUndoDesign: (state): boolean => {
+      const past =
+        state.workspaceMode === 'virtual-env'
+          ? state.virtualDesignHistoryPast
+          : state.standardDesignHistoryPast
+      return past.length > 0
+    },
+    hasSelection: (state): boolean => state.selectedElementIds.length > 0,
+    /** 当前工作区下的设计表面宽高：标准用 canvas，虚拟环境用 virtualEnv（互不覆盖） */
+    designSurfaceWidth: (state): number =>
+      state.workspaceMode === 'virtual-env' ? state.virtualEnv.width : state.canvas.width,
+    designSurfaceHeight: (state): number =>
+      state.workspaceMode === 'virtual-env' ? state.virtualEnv.height : state.canvas.height
   },
   actions: {
+    _activeElements(): DesignElement[] {
+      return this.workspaceMode === 'virtual-env' ? this.virtualElements : this.standardElements
+    },
+    _setActiveElements(next: DesignElement[]): void {
+      if (this.workspaceMode === 'virtual-env') this.virtualElements = next
+      else this.standardElements = next
+    },
+    _activePast(): DesignHistorySnapshot[] {
+      return this.workspaceMode === 'virtual-env'
+        ? this.virtualDesignHistoryPast
+        : this.standardDesignHistoryPast
+    },
+    /** 从标准设计深拷贝到虚拟环境（每次进入虚拟工作区时调用） */
+    reloadVirtualFromStandard(): void {
+      this.virtualElements = cloneElementsPlain(this.standardElements)
+      this.virtualNextSerial = this.standardNextSerial
+      this.virtualDesignHistoryPast = []
+    },
+    /**
+     * 切换工作区：进入虚拟环境时从标准重新加载一份独立副本；标准数据不被虚拟编辑污染。
+     */
+    setWorkspaceMode(mode: WorkspaceMode): void {
+      if (mode === this.workspaceMode) return
+      if (mode === 'virtual-env') {
+        this.reloadVirtualFromStandard()
+      }
+      this.workspaceMode = mode
+      this.selectedElementIds = []
+    },
     pushDesignHistory(): void {
       if (this.historyMuted) return
       const snap: DesignHistorySnapshot = {
-        elements: cloneElementsPlain(this.elements),
+        elements: cloneElementsPlain(this._activeElements()),
         selectedElementIds: [...this.selectedElementIds],
-        nextSerial: this.nextSerial
+        nextSerial: this.workspaceMode === 'virtual-env' ? this.virtualNextSerial : this.standardNextSerial
       }
-      this.designHistoryPast.push(snap)
-      if (this.designHistoryPast.length > DESIGN_HISTORY_MAX) {
-        this.designHistoryPast.shift()
+      const past = this._activePast()
+      past.push(snap)
+      if (past.length > DESIGN_HISTORY_MAX) {
+        past.shift()
       }
     },
     /** 将多处 addElement 合并为一步撤销（内部先 push 一次快照） */
@@ -105,12 +193,17 @@ export const useDesignStore = defineStore('design', {
       this.historyBatchDepth = Math.max(0, this.historyBatchDepth - 1)
     },
     undoDesign(): void {
-      const snap = this.designHistoryPast.pop()
+      const past = this._activePast()
+      const snap = past.pop()
       if (!snap) return
       this.historyMuted = true
-      this.elements = cloneElementsPlain(snap.elements)
+      this._setActiveElements(cloneElementsPlain(snap.elements))
       this.selectedElementIds = snap.selectedElementIds ? [...snap.selectedElementIds] : []
-      this.nextSerial = snap.nextSerial
+      if (this.workspaceMode === 'virtual-env') {
+        this.virtualNextSerial = snap.nextSerial
+      } else {
+        this.standardNextSerial = snap.nextSerial
+      }
       this.historyMuted = false
     },
     /** 画布拖动元素：合并整次拖动为一步撤销 */
@@ -155,7 +248,7 @@ export const useDesignStore = defineStore('design', {
       this.canvas.width = w
       this.canvas.height = h
     },
-    /** 自定义画布像素尺寸（宽×高），会记入撤销栈 */
+    /** 自定义画布像素尺寸（宽×高），会记入撤销栈（仅标准工作区画布） */
     setCanvasDimensions(width: number, height: number): void {
       const w = Math.floor(Number(width))
       const h = Math.floor(Number(height))
@@ -169,6 +262,26 @@ export const useDesignStore = defineStore('design', {
       this.canvas.width = nw
       this.canvas.height = nh
     },
+    /** 虚拟环境设备/设计表面尺寸（与标准画布独立） */
+    setVirtualEnvPreset(preset: '1920x1080' | '800x600'): void {
+      const w = preset === '800x600' ? 800 : 1920
+      const h = preset === '800x600' ? 600 : 1080
+      if (this.virtualEnv.width === w && this.virtualEnv.height === h) return
+      this.pushDesignHistory()
+      this.virtualEnv = { ...this.virtualEnv, width: w, height: h }
+    },
+    setVirtualEnvDimensions(width: number, height: number): void {
+      const w = Math.floor(Number(width))
+      const h = Math.floor(Number(height))
+      if (!Number.isFinite(w) || !Number.isFinite(h)) return
+      const min = 1
+      const max = 16000
+      const nw = Math.min(max, Math.max(min, w))
+      const nh = Math.min(max, Math.max(min, h))
+      if (nw === this.virtualEnv.width && nh === this.virtualEnv.height) return
+      this.pushDesignHistory()
+      this.virtualEnv = { ...this.virtualEnv, width: nw, height: nh }
+    },
     setZoom(zoom: number): void {
       this.canvas.zoom = Math.min(2, Math.max(0.25, zoom))
     },
@@ -180,7 +293,7 @@ export const useDesignStore = defineStore('design', {
       hitElementId?: string | null
     ): string | null {
       const findEl = (id: string): DesignElement | undefined =>
-        this.elements.find((item) => item.id === id)
+        this._activeElements().find((item) => item.id === id)
 
       if (hitElementId) {
         let cur: DesignElement | undefined = findEl(hitElementId)
@@ -191,7 +304,7 @@ export const useDesignStore = defineStore('design', {
         }
       }
 
-      const candidates = this.elements.filter((item) => isInside(rect, item))
+      const candidates = this._activeElements().filter((item) => isInside(rect, item))
       const parent = candidates.sort((a, b) => a.width * a.height - b.width * b.height)[0]
       return parent?.id ?? null
     },
@@ -213,36 +326,53 @@ export const useDesignStore = defineStore('design', {
       } else {
         parentId = this.resolveParentForNewElement(element, options?.hitElementId ?? null)
       }
+      const serial =
+        this.workspaceMode === 'virtual-env' ? this.virtualNextSerial++ : this.standardNextSerial++
       const nextElement: DesignElement = {
         ...element,
         id: uid(),
-        serial: this.nextSerial++,
+        serial,
         parentId
       }
-      this.elements.push(nextElement)
+      this._activeElements().push(nextElement)
       if (options?.select !== false) {
         this.selectedElementIds = [nextElement.id]
       }
       return nextElement
     },
+    /** 替换标准工作区元素（如 Vue 导入）；若在虚拟环境则随后从标准重载虚拟副本 */
     replaceElements(elements: DesignElement[]): void {
-      this.pushDesignHistory()
-      this.elements = elements
+      if (!this.historyMuted && this.historyBatchDepth === 0) {
+        const snap: DesignHistorySnapshot = {
+          elements: cloneElementsPlain(this.standardElements),
+          selectedElementIds: [...this.selectedElementIds],
+          nextSerial: this.standardNextSerial
+        }
+        this.standardDesignHistoryPast.push(snap)
+        if (this.standardDesignHistoryPast.length > DESIGN_HISTORY_MAX) {
+          this.standardDesignHistoryPast.shift()
+        }
+      }
+      this.standardElements = cloneElementsPlain(elements)
       this.selectedElementIds = []
-      const maxSerial = elements.reduce((max, item) => Math.max(max, item.serial), 0)
-      this.nextSerial = maxSerial + 1
+      const maxSerial = this.standardElements.reduce((max, item) => Math.max(max, item.serial), 0)
+      this.standardNextSerial = maxSerial + 1
+      if (this.workspaceMode === 'virtual-env') {
+        this.reloadVirtualFromStandard()
+      }
     },
-    /** 从设计稿文件还原（不记入撤销栈，并清空历史） */
+    /** 从设计稿文件还原（不记入撤销栈，并清空历史；权威数据写入标准工作区） */
     applyDesignProjectFile(data: DesignProjectFileV1): void {
       this.historyMuted = true
-      this.designHistoryPast = []
+      this.standardDesignHistoryPast = []
+      this.virtualDesignHistoryPast = []
       this.historyBatchDepth = 0
       this.layoutDragActive = false
       this.layoutDragHistorySaved = false
-      this.elements = cloneElementsPlain(data.elements)
-      const maxSerial = this.elements.reduce((m, e) => Math.max(m, e.serial), 0)
+      this.standardElements = cloneElementsPlain(data.elements)
+      const maxSerial = this.standardElements.reduce((m, e) => Math.max(m, e.serial), 0)
       const ns = Math.floor(Number(data.nextSerial))
-      this.nextSerial = Number.isFinite(ns) ? Math.max(ns, maxSerial + 1) : maxSerial + 1
+      this.standardNextSerial = Number.isFinite(ns) ? Math.max(ns, maxSerial + 1) : maxSerial + 1
       const c = data.canvas
       this.canvas = {
         width: Math.max(1, Math.min(16000, Math.floor(Number(c.width)) || defaultCanvas.width)),
@@ -255,14 +385,91 @@ export const useDesignStore = defineStore('design', {
       this.activePreset = null
       this.activeView = 'design'
       this.dragPreview = { ...defaultPreview }
+      if (data.workspaceMode === 'virtual-env' || data.workspaceMode === 'standard') {
+        this.workspaceMode = data.workspaceMode
+      } else {
+        this.workspaceMode = 'standard'
+      }
+      if (data.virtualEnv && typeof data.virtualEnv === 'object') {
+        const v = data.virtualEnv
+        const def = defaultVirtualEnv()
+        const ve = v as VirtualEnvConfig
+        const vw = Math.floor(Number(ve.width))
+        const vh = Math.floor(Number(ve.height))
+        this.virtualEnv = {
+          width: Math.max(1, Math.min(16000, Number.isFinite(vw) ? vw : def.width)),
+          height: Math.max(1, Math.min(16000, Number.isFinite(vh) ? vh : def.height)),
+          background: typeof v.background === 'string' ? v.background : def.background,
+          position: normalizeVirtualEnvPosition(v.position),
+          presetTitleBar: !!v.presetTitleBar,
+          presetFooter: !!v.presetFooter,
+          presetTitleBarPosition: normalizeVirtualEnvPosition(ve.presetTitleBarPosition ?? 'absolute'),
+          presetFooterPosition: normalizeVirtualEnvPosition(ve.presetFooterPosition ?? 'absolute'),
+          presetTitleBarHeight: clampVirtualChromeHeight(ve.presetTitleBarHeight, def.presetTitleBarHeight),
+          presetFooterHeight: clampVirtualChromeHeight(ve.presetFooterHeight, def.presetFooterHeight)
+        }
+      } else {
+        this.virtualEnv = defaultVirtualEnv()
+      }
       this.historyMuted = false
+      if (this.workspaceMode === 'virtual-env') {
+        this.reloadVirtualFromStandard()
+      }
+    },
+    patchVirtualEnv(payload: Partial<VirtualEnvConfig>): void {
+      if (payload.width !== undefined || payload.height !== undefined) {
+        const w =
+          payload.width !== undefined
+            ? Math.max(1, Math.min(16000, Math.floor(Number(payload.width))))
+            : this.virtualEnv.width
+        const h =
+          payload.height !== undefined
+            ? Math.max(1, Math.min(16000, Math.floor(Number(payload.height))))
+            : this.virtualEnv.height
+        this.setVirtualEnvDimensions(w, h)
+      }
+      const { width: _dw, height: _dh, ...rest } = payload
+      const next: VirtualEnvConfig = { ...this.virtualEnv, ...rest }
+      next.width = this.virtualEnv.width
+      next.height = this.virtualEnv.height
+      if (payload.position !== undefined) {
+        next.position = normalizeVirtualEnvPosition(payload.position)
+      }
+      if (payload.background !== undefined && typeof payload.background === 'string') {
+        next.background = payload.background
+      }
+      if (payload.presetTitleBar !== undefined) next.presetTitleBar = !!payload.presetTitleBar
+      if (payload.presetFooter !== undefined) next.presetFooter = !!payload.presetFooter
+      if (payload.presetTitleBarPosition !== undefined) {
+        next.presetTitleBarPosition = normalizeVirtualEnvPosition(payload.presetTitleBarPosition)
+      }
+      if (payload.presetFooterPosition !== undefined) {
+        next.presetFooterPosition = normalizeVirtualEnvPosition(payload.presetFooterPosition)
+      }
+      if (payload.presetTitleBarHeight !== undefined) {
+        next.presetTitleBarHeight = clampVirtualChromeHeight(
+          payload.presetTitleBarHeight,
+          next.presetTitleBarHeight ?? defaultVirtualEnv().presetTitleBarHeight
+        )
+      }
+      if (payload.presetFooterHeight !== undefined) {
+        next.presetFooterHeight = clampVirtualChromeHeight(
+          payload.presetFooterHeight,
+          next.presetFooterHeight ?? defaultVirtualEnv().presetFooterHeight
+        )
+      }
+      const defVe = defaultVirtualEnv()
+      next.presetTitleBarHeight =
+        next.presetTitleBarHeight ?? defVe.presetTitleBarHeight
+      next.presetFooterHeight = next.presetFooterHeight ?? defVe.presetFooterHeight
+      this.virtualEnv = next
     },
     updateElement(
       id: string,
       payload: Partial<DesignElement>,
       options?: { skipHistory?: boolean }
     ): void {
-      const target = this.elements.find((item) => item.id === id)
+      const target = this._activeElements().find((item) => item.id === id)
       if (!target) return
       const skipHistory = options?.skipHistory === true
       if (!skipHistory) {
@@ -291,7 +498,7 @@ export const useDesignStore = defineStore('design', {
         }
       }
       if (target.type === 'img' && target.parentId && payload.imageSrc !== undefined) {
-        const parent = this.elements.find((item) => item.id === target.parentId)
+        const parent = this._activeElements().find((item) => item.id === target.parentId)
         if (parent?.kind === 'image') {
           parent.imageSrc = String(payload.imageSrc ?? '')
         }
@@ -313,7 +520,7 @@ export const useDesignStore = defineStore('design', {
         if (structuralKey.some((key) => key in payload && payload[key] !== undefined)) {
           this.rebuildTableCells(id)
         } else {
-          const haveCells = this.elements.some(
+          const haveCells = this._activeElements().some(
             (e) => e.parentId === target.id && e.isTableCell
           )
           if (!haveCells) {
@@ -333,7 +540,7 @@ export const useDesignStore = defineStore('design', {
       }
     },
     shiftDescendants(rootId: string, dx: number, dy: number): void {
-      this.elements
+      this._activeElements()
         .filter((item) => item.parentId === rootId)
         .forEach((ch) => {
           ch.x += dx
@@ -343,11 +550,11 @@ export const useDesignStore = defineStore('design', {
     },
     /** nodeId 是否位于 ancestorId 的子树中（直连或更深） */
     isDescendantOf(ancestorId: string, nodeId: string): boolean {
-      let cur: DesignElement | undefined = this.elements.find((item) => item.id === nodeId)
+      let cur: DesignElement | undefined = this._activeElements().find((item) => item.id === nodeId)
       while (cur?.parentId) {
         const pid = cur.parentId
         if (pid === ancestorId) return true
-        cur = this.elements.find((item) => item.id === pid)
+        cur = this._activeElements().find((item) => item.id === pid)
       }
       return false
     },
@@ -356,8 +563,8 @@ export const useDesignStore = defineStore('design', {
      */
     reparentElement(childId: string, newParentId: string): void {
       if (childId === newParentId) return
-      const child = this.elements.find((item) => item.id === childId)
-      const parent = this.elements.find((item) => item.id === newParentId)
+      const child = this._activeElements().find((item) => item.id === childId)
+      const parent = this._activeElements().find((item) => item.id === newParentId)
       if (!child || !parent) return
       if (this.isDescendantOf(childId, newParentId)) return
       if (parent.kind === 'table') return
@@ -369,13 +576,13 @@ export const useDesignStore = defineStore('design', {
      * 批量挂到同一父级（一步撤销，用于多选拖入容器）。
      */
     reparentElements(childIds: string[], newParentId: string): void {
-      const parent = this.elements.find((item) => item.id === newParentId)
+      const parent = this._activeElements().find((item) => item.id === newParentId)
       if (!parent || parent.kind === 'table') return
       const dragged = new Set(childIds)
       const toReparent: string[] = []
       for (const cid of childIds) {
         if (cid === newParentId) continue
-        const child = this.elements.find((item) => item.id === cid)
+        const child = this._activeElements().find((item) => item.id === cid)
         if (!child) continue
         if (child.parentId === newParentId) continue
         if (dragged.has(newParentId)) continue
@@ -385,7 +592,7 @@ export const useDesignStore = defineStore('design', {
       if (toReparent.length === 0) return
       this.pushDesignHistory()
       for (const cid of toReparent) {
-        const c = this.elements.find((item) => item.id === cid)
+        const c = this._activeElements().find((item) => item.id === cid)
         if (c) c.parentId = newParentId
       }
       this.selectedElementIds = [...toReparent]
@@ -394,19 +601,19 @@ export const useDesignStore = defineStore('design', {
     selectionRoots(ids: string[]): string[] {
       const set = new Set(ids)
       return ids.filter((id) => {
-        const el = this.elements.find((e) => e.id === id)
+        const el = this._activeElements().find((e) => e.id === id)
         if (!el?.parentId) return true
         return !set.has(el.parentId)
       })
     },
     syncTableCellsLayout(tableId: string): void {
-      const t = this.elements.find((item) => item.id === tableId)
+      const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
       const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
       const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
       const cw = t.width / cols
       const ch = t.height / rows
-      this.elements.forEach((cell) => {
+      this._activeElements().forEach((cell) => {
         if (cell.parentId !== tableId || !cell.isTableCell) return
         const r = cell.tableCellRow ?? 0
         const c = cell.tableCellCol ?? 0
@@ -424,7 +631,7 @@ export const useDesignStore = defineStore('design', {
       })
     },
     initTableCells(tableId: string): void {
-      const t = this.elements.find((item) => item.id === tableId)
+      const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
       const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
       const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
@@ -454,23 +661,23 @@ export const useDesignStore = defineStore('design', {
       }
     },
     rebuildTableCells(tableId: string): void {
-      const t = this.elements.find((item) => item.id === tableId)
+      const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
       this.pushDesignHistory()
       const toDrop = new Set<string>()
       const walk = (eid: string): void => {
         toDrop.add(eid)
-        this.elements.filter((item) => item.parentId === eid).forEach((ch) => walk(ch.id))
+        this._activeElements().filter((item) => item.parentId === eid).forEach((ch) => walk(ch.id))
       }
-      this.elements
+      this._activeElements()
         .filter((item) => item.parentId === tableId && item.isTableCell)
         .forEach((cell) => walk(cell.id))
-      this.elements = this.elements.filter((item) => !toDrop.has(item.id))
+      this._setActiveElements(this._activeElements().filter((item) => !toDrop.has(item.id)))
       this.initTableCells(tableId)
       this.selectedElementIds = [tableId]
     },
     setImageHasLabelForSelectedStyle(id: string, hasLabel: boolean): void {
-      const el = this.elements.find((item) => item.id === id)
+      const el = this._activeElements().find((item) => item.id === id)
       if (!el || el.kind !== 'image') return
       if (el.type === 'img' && !hasLabel) return
 
@@ -479,7 +686,7 @@ export const useDesignStore = defineStore('design', {
       if (el.type === 'img') {
         const pid = el.parentId
         const { x, y, opacity, imageSrc, name } = el
-        this.elements = this.elements.filter((item) => item.id !== el.id)
+        this._setActiveElements(this._activeElements().filter((item) => item.id !== el.id))
         const container = this.addElement(
           {
             kind: 'image',
@@ -507,10 +714,12 @@ export const useDesignStore = defineStore('design', {
 
       if (!hasLabel) {
         const pid = el.parentId
-        const imgChild = this.elements.find((c) => c.parentId === el.id && c.type === 'img')
+        const imgChild = this._activeElements().find((c) => c.parentId === el.id && c.type === 'img')
         const src = el.imageSrc ?? imgChild?.imageSrc ?? ''
         const { x, y, opacity, name } = el
-        this.elements = this.elements.filter((item) => item.id !== el.id && item.parentId !== el.id)
+        this._setActiveElements(
+          this._activeElements().filter((item) => item.id !== el.id && item.parentId !== el.id)
+        )
         const img = this.addElement(
           {
             kind: 'image',
@@ -552,10 +761,10 @@ export const useDesignStore = defineStore('design', {
     selectParentOfSelected(): void {
       const sid = this.selectedElementIds.at(-1) ?? ''
       if (!sid) return
-      const el = this.elements.find((item) => item.id === sid)
+      const el = this._activeElements().find((item) => item.id === sid)
       const pid = el?.parentId
       if (pid == null || pid === '') return
-      if (!this.elements.some((item) => item.id === pid)) return
+      if (!this._activeElements().some((item) => item.id === pid)) return
       this.selectedElementIds = [pid]
     },
     clearSelection(): void {
@@ -566,7 +775,7 @@ export const useDesignStore = defineStore('design', {
       this.pushDesignHistory()
       const sel = new Set(this.selectedElementIds)
       const roots = this.selectedElementIds.filter((id) => {
-        const el = this.elements.find((e) => e.id === id)
+        const el = this._activeElements().find((e) => e.id === id)
         if (!el) return false
         if (!el.parentId) return true
         return !sel.has(el.parentId)
@@ -574,16 +783,16 @@ export const useDesignStore = defineStore('design', {
       const toDrop = new Set<string>()
       const walk = (id: string): void => {
         toDrop.add(id)
-        this.elements.filter((item) => item.parentId === id).forEach((ch) => walk(ch.id))
+        this._activeElements().filter((item) => item.parentId === id).forEach((ch) => walk(ch.id))
       }
       roots.forEach((id) => walk(id))
-      this.elements = this.elements.filter((item) => !toDrop.has(item.id))
+      this._setActiveElements(this._activeElements().filter((item) => !toDrop.has(item.id)))
       this.selectedElementIds = []
     },
     duplicateSelectedElement(): void {
       const sel = new Set(this.selectedElementIds)
       const roots = this.selectedElementIds.filter((id) => {
-        const el = this.elements.find((e) => e.id === id)
+        const el = this._activeElements().find((e) => e.id === id)
         if (!el) return false
         if (!el.parentId) return true
         return !sel.has(el.parentId)
@@ -593,7 +802,7 @@ export const useDesignStore = defineStore('design', {
       this.pushDesignHistory()
       const newIds: string[] = []
       for (const rid of roots) {
-        const selected = this.elements.find((e) => e.id === rid)
+        const selected = this._activeElements().find((e) => e.id === rid)
         if (!selected) continue
         const { id, serial, parentId, ...rest } = selected
         void id
@@ -612,9 +821,9 @@ export const useDesignStore = defineStore('design', {
     },
     /** 按当前 Column 高度与子元素数量，均分高度并重排子块（不改子元素数量时用于宽高变化后同步） */
     syncColumnChildrenLayout(containerId: string): void {
-      const container = this.elements.find((item) => item.id === containerId)
+      const container = this._activeElements().find((item) => item.id === containerId)
       if (!container || container.kind !== 'column') return
-      const children = this.elements
+      const children = this._activeElements()
         .filter((item) => item.parentId === containerId)
         .sort((a, b) => a.y - b.y || a.x - b.x)
       const count = Math.max(1, container.childCount ?? 1)
@@ -639,7 +848,7 @@ export const useDesignStore = defineStore('design', {
       nextCount: number,
       options?: { skipHistory?: boolean }
     ): void {
-      const container = this.elements.find((item) => item.id === containerId)
+      const container = this._activeElements().find((item) => item.id === containerId)
       if (!container) return
       if (container.kind !== 'column') return
       if (!options?.skipHistory) {
@@ -651,7 +860,9 @@ export const useDesignStore = defineStore('design', {
       container.childCount = count
 
       // remove existing children, keep container
-      this.elements = this.elements.filter((item) => item.id === containerId || item.parentId !== containerId)
+      this._setActiveElements(
+        this._activeElements().filter((item) => item.id === containerId || item.parentId !== containerId)
+      )
 
       const containerH = container.height
       const heights = computeColumnChildHeights(containerH, count)
@@ -681,7 +892,7 @@ export const useDesignStore = defineStore('design', {
       this.selectedElementIds = [containerId]
     },
     rebuildImageChildren(containerId: string): void {
-      const c = this.elements.find((item) => item.id === containerId)
+      const c = this._activeElements().find((item) => item.id === containerId)
       if (!c || c.kind !== 'image' || c.type !== 'div' || !c.hasLabel) return
 
       const rawGap = Number(c.gap)
@@ -690,8 +901,8 @@ export const useDesignStore = defineStore('design', {
       const imgSize = 30
       const has = !!c.hasLabel
 
-      const oldImg = this.elements.find((item) => item.parentId === c.id && item.type === 'img')
-      const oldLabel = this.elements.find(
+      const oldImg = this._activeElements().find((item) => item.parentId === c.id && item.type === 'img')
+      const oldLabel = this._activeElements().find(
         (item) => item.parentId === c.id && item.type === 'div' && item.name.endsWith('-label')
       )
       const preservedCaption = oldLabel?.text ?? ''
@@ -699,7 +910,9 @@ export const useDesignStore = defineStore('design', {
         c.imageSrc = oldImg.imageSrc
       }
 
-      this.elements = this.elements.filter((item) => item.id === c.id || item.parentId !== c.id)
+      this._setActiveElements(
+        this._activeElements().filter((item) => item.id === c.id || item.parentId !== c.id)
+      )
 
       const imgY = has ? c.y + Math.max(0, (c.height - imgSize) / 2) : c.y
       const src = c.imageSrc ?? ''

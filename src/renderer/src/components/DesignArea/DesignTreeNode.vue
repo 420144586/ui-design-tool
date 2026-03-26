@@ -3,8 +3,9 @@ import { computed } from 'vue'
 import type { DesignElement, LayoutMode } from '@renderer/types/design'
 import DButton from '@renderer/D-components/DButton.vue'
 import { cssBackgroundFill } from '@renderer/utils/elementBackground'
-import { applyBoxBorderToStyle } from '@renderer/utils/elementBorder'
+import { applyBoxBorderToStyle, isBorderSideEnabled } from '@renderer/utils/elementBorder'
 import { applyLayoutCenterToInlineStyle, gridPlacementForElement } from '@renderer/utils/layoutCenter'
+import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
 
 defineOptions({ name: 'DesignTreeNode' })
 
@@ -14,6 +15,10 @@ const props = defineProps<{
   selectedElementIds: string[]
   layoutMode: LayoutMode
   gridSize: number
+  /** 设计表面宽度（根级百分比基准） */
+  surfaceWidth: number
+  /** 设计表面高度（根级百分比基准） */
+  surfaceHeight: number
   parent?: DesignElement
 }>()
 
@@ -45,6 +50,42 @@ const PLACEHOLDER_IMG =
 const imgSrc = computed(
   () => props.element.imageSrc?.trim() || PLACEHOLDER_IMG
 )
+
+/** 当前元素等效像素宽高（含百分比沿父链解析），用于网格占位与子层网格线 */
+const layoutPxBox = computed(() =>
+  resolveElementLayoutPxBox(props.element, props.elements, {
+    width: props.surfaceWidth,
+    height: props.surfaceHeight
+  })
+)
+
+/**
+ * 子节点坐标系在父的 padding 盒内（不含父边框），若仍用与父同值的宽高会溢出并压在父边框上。
+ * border-box：用 max 100% 将整块限制在父内容区；content-box：边框在 width 外，需减去自身边框厚度。
+ */
+function applyParentBoundsClamp(style: Record<string, string>, element: DesignElement): void {
+  if (!props.parent) return
+  const isContentBox = element.boxSizing === 'content-box'
+  const bw = element.borderWidth
+  const bs = element.borderStyle
+  const hasBorder = !!(bw && bs && bs !== 'none')
+  if (!isContentBox) {
+    style.maxWidth = '100%'
+    style.maxHeight = '100%'
+    return
+  }
+  if (!hasBorder) {
+    style.maxWidth = '100%'
+    style.maxHeight = '100%'
+    return
+  }
+  const l = isBorderSideEnabled(element, 'left') ? bw! : 0
+  const r = isBorderSideEnabled(element, 'right') ? bw! : 0
+  const t = isBorderSideEnabled(element, 'top') ? bw! : 0
+  const b = isBorderSideEnabled(element, 'bottom') ? bw! : 0
+  style.maxWidth = l + r > 0 ? `calc(100% - ${l + r}px)` : '100%'
+  style.maxHeight = t + b > 0 ? `calc(100% - ${t + b}px)` : '100%'
+}
 
 const nodeStyle = computed(() => {
   const commonStyle: Record<string, string> = {}
@@ -91,6 +132,7 @@ const nodeStyle = computed(() => {
     style.top = '0'
     style.width = '100%'
     style.flex = '1 1 0'
+    style.minWidth = '0'
     style.minHeight = '0'
     style.display = 'flex'
     style.alignItems = 'center'
@@ -103,17 +145,20 @@ const nodeStyle = computed(() => {
 
   const style: Record<string, string> = { ...commonStyle }
   const isDComponent = props.element.kind === 'dcomponent'
+  const wh = cssWidthHeightStrings(props.element)
   if (props.layoutMode === 'grid') {
+    const box = layoutPxBox.value
     const gp = gridPlacementForElement(
-      props.element,
+      { ...props.element, width: box.width, height: box.height },
       relativeX.value,
       relativeY.value,
       props.gridSize
     )
     style.gridColumn = gp.gridColumn
     style.gridRow = gp.gridRow
-    style.width = `${props.element.width}px`
-    style.height = `${props.element.height}px`
+    style.width = wh.width
+    style.height = wh.height
+    applyParentBoundsClamp(style, props.element)
     style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
     style.opacity = String(props.element.opacity)
     style.position = 'relative'
@@ -130,8 +175,9 @@ const nodeStyle = computed(() => {
   style.position = 'absolute'
   style.left = `${relativeX.value}px`
   style.top = `${relativeY.value}px`
-  style.width = `${props.element.width}px`
-  style.height = `${props.element.height}px`
+  style.width = wh.width
+  style.height = wh.height
+  applyParentBoundsClamp(style, props.element)
   style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
   style.opacity = String(props.element.opacity)
   if (props.element.kind === 'column' && children.value.length > 0) {
@@ -205,12 +251,13 @@ const childContainerStyle = computed(() => {
     return style
   }
   if (props.layoutMode === 'grid') {
+    const box = layoutPxBox.value
     style.position = 'absolute'
     style.inset = '0'
     style.display = 'grid'
     style.placeItems = 'center'
-    style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(props.element.width / props.gridSize))}, ${props.gridSize}px)`
-    style.gridTemplateRows = `repeat(${Math.max(1, Math.floor(props.element.height / props.gridSize))}, ${props.gridSize}px)`
+    style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(box.width / props.gridSize))}, ${props.gridSize}px)`
+    style.gridTemplateRows = `repeat(${Math.max(1, Math.floor(box.height / props.gridSize))}, ${props.gridSize}px)`
     return style
   }
   style.position = 'absolute'
@@ -256,6 +303,8 @@ const childContainerStyle = computed(() => {
               :selected-element-ids="selectedElementIds"
               :layout-mode="layoutMode"
               :grid-size="gridSize"
+              :surface-width="surfaceWidth"
+              :surface-height="surfaceHeight"
               :parent="tableCellAt(ri - 1, ci - 1)"
               @select="(id, ev) => emit('select', id, ev)"
               @mousedown="(event, node) => emit('mousedown', event, node)"
@@ -299,6 +348,8 @@ const childContainerStyle = computed(() => {
         :selected-element-ids="selectedElementIds"
         :layout-mode="layoutMode"
         :grid-size="gridSize"
+        :surface-width="surfaceWidth"
+        :surface-height="surfaceHeight"
         :parent="element"
         @select="(id, ev) => emit('select', id, ev)"
         @mousedown="(event, node) => emit('mousedown', event, node)"

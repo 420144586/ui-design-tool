@@ -11,6 +11,7 @@ import {
   layoutCenterCssForAbsolute,
   layoutCenterCssForGrid
 } from '@renderer/utils/layoutCenter'
+import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
 
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
@@ -184,6 +185,9 @@ export function generateStyleBlockForElement(
   const relativeX = parent ? element.x - parent.x : element.x
   const relativeY = parent ? element.y - parent.y : element.y
   const hasChildren = elementHasChildren(elements, element.id)
+  const boxPx = resolveElementLayoutPxBox(element, elements, canvas)
+  const wh = cssWidthHeightStrings(element)
+  const gridPlacementModel = { ...element, width: boxPx.width, height: boxPx.height }
 
   const commonStyles: string[] = []
   if (element.color) commonStyles.push(`  color: ${element.color};`)
@@ -198,14 +202,14 @@ export function generateStyleBlockForElement(
 
   if (element.kind === 'image' && element.type === 'img') {
     if (layoutMode === 'grid') {
-      const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
+      const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...layoutCenterCssForGrid(element),
-        `  width: ${element.width}px;`,
-        `  height: ${element.height}px;`,
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
         `  opacity: ${element.opacity};`,
         '  object-fit: cover;',
         '  display: block;',
@@ -218,8 +222,8 @@ export function generateStyleBlockForElement(
       '  position: absolute;',
       `  z-index: ${element.serial};`,
       ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-      `  width: ${element.width}px;`,
-      `  height: ${element.height}px;`,
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
       `  opacity: ${element.opacity};`,
       '  object-fit: cover;',
       '  display: block;',
@@ -231,14 +235,14 @@ export function generateStyleBlockForElement(
   if (element.kind === 'image' && element.type === 'div') {
     const gap = element.gap ?? 10
     if (layoutMode === 'grid') {
-      const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
+      const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...layoutCenterCssForGrid(element),
-        `  width: ${element.width}px;`,
-        `  height: ${element.height}px;`,
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
@@ -255,8 +259,8 @@ export function generateStyleBlockForElement(
       '  position: absolute;',
       `  z-index: ${element.serial};`,
       ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-      `  width: ${element.width}px;`,
-      `  height: ${element.height}px;`,
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
       '  display: flex;',
@@ -271,14 +275,14 @@ export function generateStyleBlockForElement(
   if (element.kind === 'table') {
     const bc = element.borderColor ?? '#d0d0d0'
     if (layoutMode === 'grid') {
-      const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
+      const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...layoutCenterCssForGrid(element),
-        `  width: ${element.width}px;`,
-        `  height: ${element.height}px;`,
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
@@ -298,8 +302,8 @@ export function generateStyleBlockForElement(
       '  position: absolute;',
       `  z-index: ${element.serial};`,
       ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-      `  width: ${element.width}px;`,
-      `  height: ${element.height}px;`,
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
       '  border-collapse: collapse;',
@@ -368,15 +372,15 @@ export function generateStyleBlockForElement(
   }
 
   if (layoutMode === 'grid') {
-    const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
+    const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
     if (!hasChildren) {
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...layoutCenterCssForGrid(element),
-        `  width: ${element.width}px;`,
-        `  height: ${element.height}px;`,
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
@@ -393,8 +397,8 @@ export function generateStyleBlockForElement(
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...layoutCenterCssForGrid(element),
-        `  width: ${element.width}px;`,
-        `  height: ${element.height}px;`,
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
@@ -412,15 +416,15 @@ export function generateStyleBlockForElement(
       `  grid-column: ${gp.gridColumn};`,
       `  grid-row: ${gp.gridRow};`,
       ...layoutCenterCssForGrid(element),
-      `  width: ${element.width}px;`,
-      `  height: ${element.height}px;`,
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
       '  position: relative;',
       '  display: grid;',
       '  place-items: center;',
-      `  grid-template-columns: repeat(${Math.max(1, Math.floor(element.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
-      `  grid-template-rows: repeat(${Math.max(1, Math.floor(element.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
+      `  grid-template-columns: repeat(${Math.max(1, Math.floor(boxPx.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
+      `  grid-template-rows: repeat(${Math.max(1, Math.floor(boxPx.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
       ...commonStyles,
       '}'
     ].join('\n')
@@ -432,8 +436,8 @@ export function generateStyleBlockForElement(
       '  position: absolute;',
       `  z-index: ${element.serial};`,
       ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-      `  width: ${element.width}px;`,
-      `  height: ${element.height}px;`,
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
       '  display: flex;',
@@ -451,8 +455,8 @@ export function generateStyleBlockForElement(
     '  position: absolute;',
     `  z-index: ${element.serial};`,
     ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-    `  width: ${element.width}px;`,
-    `  height: ${element.height}px;`,
+    `  width: ${wh.width};`,
+    `  height: ${wh.height};`,
     `  background: ${cssBackgroundFill(element)};`,
     `  opacity: ${element.opacity};`,
     hasChildren ? '' : '  display: flex;',

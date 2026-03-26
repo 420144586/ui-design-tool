@@ -5,10 +5,11 @@ import { useDesignStore } from '@renderer/store/design'
 import CodeView from '@renderer/components/CodeView/CodeView.vue'
 import DesignArea from '@renderer/components/DesignArea/DesignArea.vue'
 import ElementLibrary from '@renderer/components/ElementLibrary/ElementLibrary.vue'
+import VirtualEnvPanel from '@renderer/components/VirtualEnvPanel/VirtualEnvPanel.vue'
 import PropertyPanel from '@renderer/components/PropertyPanel/PropertyPanel.vue'
 import ColumnPresetSettings from '@renderer/components/ColumnPresetSettings/ColumnPresetSettings.vue'
 import ImagePresetSettings from '@renderer/components/ImagePresetSettings/ImagePresetSettings.vue'
-import type { LayoutMode, ViewMode } from '@renderer/types/design'
+import type { LayoutMode, ViewMode, WorkspaceMode } from '@renderer/types/design'
 import { generateVueSfcCode } from '@renderer/utils/codegen'
 import { importVueToDesignElements } from '@renderer/utils/importVue'
 import { parseDesignProjectFile, stringifyDesignProjectFile } from '@renderer/utils/designProjectFile'
@@ -53,36 +54,120 @@ const views: Array<{ key: ViewMode; label: string }> = [
 const setLayoutMode = (mode: LayoutMode): void => store.setLayoutMode(mode)
 const zoomPercent = computed(() => `${Math.round(store.canvas.zoom * 100)}%`)
 
+const showVirtualEnvUi = computed(
+  () => store.workspaceMode === 'virtual-env' && store.activeView === 'design'
+)
+
+const virtualDeviceStyle = computed(() => {
+  const v = store.virtualEnv
+  const z = store.canvas.zoom
+  const w = v.width
+  const h = v.height
+  return {
+    position: v.position,
+    width: `${w}px`,
+    height: `${h}px`,
+    background: v.background,
+    transform: `scale(${z})`,
+    transformOrigin: 'top center'
+  } as Record<string, string>
+})
+
+/** TitleBar / Footer 叠在满屏画布上，由各自 position 控制 */
+const titleBarChromeStyle = computed(() => {
+  const p = store.virtualEnv.presetTitleBarPosition
+  const h = store.virtualEnv.presetTitleBarHeight ?? 36
+  const base: Record<string, string> = {
+    position: p,
+    left: '0',
+    right: '0',
+    width: '100%',
+    height: `${h}px`,
+    minHeight: `${h}px`,
+    boxSizing: 'border-box',
+    zIndex: '2'
+  }
+  if (p !== 'static') base.top = '0'
+  return base
+})
+
+const footerChromeStyle = computed(() => {
+  const p = store.virtualEnv.presetFooterPosition
+  const h = store.virtualEnv.presetFooterHeight ?? 44
+  const base: Record<string, string> = {
+    position: p,
+    left: '0',
+    right: '0',
+    width: '100%',
+    height: `${h}px`,
+    minHeight: `${h}px`,
+    boxSizing: 'border-box',
+    zIndex: '2'
+  }
+  if (p !== 'static') base.bottom = '0'
+  return base
+})
+
+const switchWorkspaceMode = (mode: WorkspaceMode): void => {
+  store.setWorkspaceMode(mode)
+}
+
 const canvasPresetKey = computed(() => {
-  const { width, height } = store.canvas
+  const width = store.designSurfaceWidth
+  const height = store.designSurfaceHeight
   if (width === 1920 && height === 1080) return '1920x1080'
   if (width === 800 && height === 600) return '800x600'
   return 'custom'
 })
 
-const canvasWInput = ref(store.canvas.width)
-const canvasHInput = ref(store.canvas.height)
+const canvasWInput = ref(
+  store.workspaceMode === 'virtual-env' ? store.virtualEnv.width : store.canvas.width
+)
+const canvasHInput = ref(
+  store.workspaceMode === 'virtual-env' ? store.virtualEnv.height : store.canvas.height
+)
 
+/** 左侧虚拟环境属性与顶栏尺寸必须同源：直接监听 canvas / virtualEnv，避免仅依赖 getter 时偶发不同步 */
 watch(
-  () => [store.canvas.width, store.canvas.height] as const,
-  ([w, h]) => {
-    canvasWInput.value = w
-    canvasHInput.value = h
-  }
+  [
+    () => store.workspaceMode,
+    () => store.canvas.width,
+    () => store.canvas.height,
+    () => store.virtualEnv.width,
+    () => store.virtualEnv.height
+  ],
+  () => {
+    if (store.workspaceMode === 'virtual-env') {
+      canvasWInput.value = store.virtualEnv.width
+      canvasHInput.value = store.virtualEnv.height
+    } else {
+      canvasWInput.value = store.canvas.width
+      canvasHInput.value = store.canvas.height
+    }
+  },
+  { immediate: true }
 )
 
 const onCanvasPresetChange = (event: Event): void => {
   const v = (event.target as HTMLSelectElement).value
   if (v === 'custom') return
-  store.setCanvasPreset(v as '1920x1080' | '800x600')
+  if (store.workspaceMode === 'virtual-env') {
+    store.setVirtualEnvPreset(v as '1920x1080' | '800x600')
+  } else {
+    store.setCanvasPreset(v as '1920x1080' | '800x600')
+  }
 }
 
 const applyCustomCanvasSize = (): void => {
-  store.setCanvasDimensions(canvasWInput.value, canvasHInput.value)
+  if (store.workspaceMode === 'virtual-env') {
+    store.setVirtualEnvDimensions(canvasWInput.value, canvasHInput.value)
+  } else {
+    store.setCanvasDimensions(canvasWInput.value, canvasHInput.value)
+  }
 }
 
 const exportCurrentAsVue = async (): Promise<void> => {
-  const content = generateVueSfcCode(store.elements, store.canvas.layoutMode, {
+  const content = generateVueSfcCode(store.canonicalElements, store.canvas.layoutMode, {
     width: store.canvas.width,
     height: store.canvas.height,
     gridSize: store.canvas.gridSize
@@ -91,7 +176,7 @@ const exportCurrentAsVue = async (): Promise<void> => {
 }
 
 const goToTestPage = async (): Promise<void> => {
-  const content = generateVueSfcCode(store.elements, store.canvas.layoutMode, {
+  const content = generateVueSfcCode(store.canonicalElements, store.canvas.layoutMode, {
     width: store.canvas.width,
     height: store.canvas.height,
     gridSize: store.canvas.gridSize
@@ -148,7 +233,10 @@ const saveDesignProject = async (silent: boolean = false): Promise<void> => {
       isLoading.value = true
       loadingText.value = '正在保存...'
     }
-    const content = stringifyDesignProjectFile(store.canvas, store.elements, store.nextSerial)
+    const content = stringifyDesignProjectFile(store.canvas, store.canonicalElements, store.canonicalNextSerial, {
+      workspaceMode: store.workspaceMode,
+      virtualEnv: store.virtualEnv
+    })
     const result = await invokeSaveDesignProject(content, silent && currentFilePath.value ? currentFilePath.value : undefined)
     if (!result.canceled && result.filePath) {
       currentFilePath.value = result.filePath
@@ -186,12 +274,16 @@ const loadDesignProject = async (): Promise<void> => {
 }
 
 const isTypingInField = (target: EventTarget | null): boolean => {
-  const el = target instanceof HTMLElement ? target : null
-  if (!el) return false
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
-  if (el.isContentEditable) return true
-  return el.closest('input, textarea, select, [contenteditable="true"]') !== null
+  const check = (t: EventTarget | null): boolean => {
+    const el = t instanceof HTMLElement ? t : null
+    if (!el) return false
+    const tag = el.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+    if (el.isContentEditable) return true
+    return el.closest('input, textarea, select, [contenteditable="true"]') !== null
+  }
+  /** keydown 的 event.target 偶发与焦点元素不一致（如 Electron / 影子节点），用 activeElement 兜底 */
+  return check(target) || check(document.activeElement)
 }
 
 const onDesignHotkeys = (event: KeyboardEvent): void => {
@@ -208,6 +300,16 @@ const onDesignHotkeys = (event: KeyboardEvent): void => {
   }
 
   if (isTypingInField(event.target)) return
+  if (
+    event.key.toLowerCase() === 'q' &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    store.clearSelection()
+    return
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
     event.preventDefault()
     store.undoDesign()
@@ -231,22 +333,40 @@ onUnmounted(() => {
   <div class="designer-page">
     <header class="topbar">
       <div class="top-left">
-        <span class="title">Electron-Vite H5 Vue 设计工具</span>
-      </div>
-      <div class="top-center">
-        <button class="tab" @click="goToTestPage">预览</button>
-        <button
-          v-for="tab in views"
-          :key="tab.key"
-          class="tab"
-          :class="{ active: store.activeView === tab.key }"
-          @click="store.setActiveView(tab.key)"
-        >
-          {{ tab.label }}
-        </button>
+
+        <div class="top-left-tabs">
+          <button
+            class="tab workspace-tab"
+            :class="{ active: store.workspaceMode === 'standard' }"
+            title="左侧为元素库"
+            @click="switchWorkspaceMode('standard')"
+          >
+            标准
+          </button>
+          <button
+            class="tab workspace-tab"
+            :class="{ active: store.workspaceMode === 'virtual-env' }"
+            title="独立设备预览场景，与标准画布尺寸/网格无关；左侧为环境属性"
+            @click="switchWorkspaceMode('virtual-env')"
+          >
+            虚拟环境
+          </button>
+          <span class="top-sep" aria-hidden="true" />
+          <button class="tab" @click="goToTestPage">预览</button>
+          <button
+            v-for="tab in views"
+            :key="tab.key"
+            class="tab"
+            :class="{ active: store.activeView === tab.key }"
+            @click="store.setActiveView(tab.key)"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
       </div>
       <div class="top-right">
         <select
+          v-if="store.workspaceMode === 'standard'"
           :value="store.canvas.layoutMode"
           @change="setLayoutMode(($event.target as HTMLSelectElement).value as LayoutMode)"
         >
@@ -258,7 +378,14 @@ onUnmounted(() => {
           <option value="800x600">800×600</option>
           <option value="custom">自定义尺寸…</option>
         </select>
-        <div class="canvas-dim-custom" title="自定义画布宽高（像素），修改后点应用">
+        <div
+          class="canvas-dim-custom"
+          :title="
+            store.workspaceMode === 'virtual-env'
+              ? '虚拟设备宽高（像素，与标准画布无关），修改后点应用'
+              : '标准画布宽高（像素），修改后点应用'
+          "
+        >
           <label class="dim-field">
             <span>W</span>
             <input
@@ -294,12 +421,36 @@ onUnmounted(() => {
 
     <main class="main-layout">
       <aside class="left-panel">
-        <ElementLibrary />
+        <VirtualEnvPanel v-if="showVirtualEnvUi" />
+        <ElementLibrary v-else />
       </aside>
       <section class="center-panel">
         <div v-if="store.activeView === 'design'" class="design-stack">
           <div class="design-stack-body">
-            <DesignArea />
+            <div v-if="showVirtualEnvUi" class="virtual-env-scroll">
+              <div class="virtual-env-device" :style="virtualDeviceStyle">
+                <div class="ve-screen">
+                  <div class="ve-canvas-layer">
+                    <DesignArea :apply-canvas-zoom="false" embedded-virtual />
+                  </div>
+                  <div
+                    v-if="store.virtualEnv.presetTitleBar"
+                    class="ve-chrome ve-titlebar"
+                    :style="titleBarChromeStyle"
+                  >
+                    TitleBar / 状态栏（预设占位）
+                  </div>
+                  <div
+                    v-if="store.virtualEnv.presetFooter"
+                    class="ve-chrome ve-footer"
+                    :style="footerChromeStyle"
+                  >
+                    Footer / 底栏（预设占位）
+                  </div>
+                </div>
+              </div>
+            </div>
+            <DesignArea v-else />
           </div>
           <footer class="design-toolbar" aria-label="设计工具栏">
             <button
@@ -405,7 +556,7 @@ onUnmounted(() => {
 
 .topbar {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -413,14 +564,40 @@ onUnmounted(() => {
   background: #121722;
 }
 
-.top-left .title {
-  font-size: 14px;
-  font-weight: 600;
+.top-left {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
 }
 
-.top-center {
+.product-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b96ac;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.top-left-tabs {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.top-sep {
+  width: 1px;
+  height: 20px;
+  background: #2f3748;
+  flex-shrink: 0;
+}
+
+.workspace-tab.active {
+  border-color: #5c6d9e;
+  color: #e4ebff;
 }
 
 .tab {
@@ -538,6 +715,63 @@ select,
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* 设计区滚动：仅此处出现滚动条，设备本体不滚动 */
+.virtual-env-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.virtual-env-device {
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid #3d4d64;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.ve-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ve-canvas-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ve-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #a5b2ca;
+  background: rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 255, 255, 0.06);
+  border-style: solid;
+  pointer-events: none;
+}
+
+.ve-titlebar {
+  border-bottom-width: 1px;
+}
+
+.ve-footer {
+  border-top-width: 1px;
 }
 
 .design-toolbar {

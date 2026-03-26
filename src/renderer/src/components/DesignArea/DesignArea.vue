@@ -5,6 +5,19 @@ import type { DesignElement } from '@renderer/types/design'
 import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
 import DesignTreeNode from './DesignTreeNode.vue'
 
+const props = withDefaults(
+  defineProps<{
+    /**
+     * 为 false 时不在画布上应用 zoom（由外层整体缩放，例如虚拟环境下的设备框）。
+     * 标准视图保持默认 true，对整个 canvas-wrap 应用缩放。
+     */
+    applyCanvasZoom?: boolean
+    /** 嵌入虚拟设备：非「标准画布」场景，无网格线、无边框，仅作元素预览层 */
+    embeddedVirtual?: boolean
+  }>(),
+  { applyCanvasZoom: true, embeddedVirtual: false }
+)
+
 const store = useDesignStore()
 const canvasRef = ref<HTMLElement | null>(null)
 /** 正在拖动的顶层节点 id（多选时为多个根） */
@@ -20,6 +33,7 @@ const suppressNextCanvasClick = ref(false)
 const DRAG_THRESHOLD_PX = 4
 
 const finishPointerDrag = (event: MouseEvent): void => {
+  window.removeEventListener('mousemove', onWindowPointerMove, true)
   window.removeEventListener('mouseup', finishPointerDrag, true)
   store.endLayoutDrag()
   const roots = [...movingRootIds.value]
@@ -35,6 +49,19 @@ const finishPointerDrag = (event: MouseEvent): void => {
     Math.abs(event.clientX - movePointerStart.value.x) > DRAG_THRESHOLD_PX ||
     Math.abs(event.clientY - movePointerStart.value.y) > DRAG_THRESHOLD_PX
   movePointerStart.value = null
+
+  /** 松手时始终夹回设计表面内（拖动中允许暂时越界以便拖回） */
+  const W = store.designSurfaceWidth
+  const H = store.designSurfaceHeight
+  for (const rid of roots) {
+    const el = store.elements.find((e) => e.id === rid)
+    if (!el) continue
+    const nx = Math.min(Math.max(0, el.x), Math.max(0, W - el.width))
+    const ny = Math.min(Math.max(0, el.y), Math.max(0, H - el.height))
+    if (nx !== el.x || ny !== el.y) {
+      store.updateElement(rid, { x: nx, y: ny }, { skipHistory: true })
+    }
+  }
 
   if (!dragged) return
 
@@ -90,9 +117,21 @@ const layerStyle = computed(() => {
     display: 'grid',
     /** 与子项 grid 占位（含 1/-1 跨满）配合，使 place-self/justify-self 在可视区域内生效 */
     placeItems: 'center',
-    gridTemplateColumns: `repeat(${Math.max(1, Math.floor(store.canvas.width / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`,
-    gridTemplateRows: `repeat(${Math.max(1, Math.floor(store.canvas.height / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`
+    gridTemplateColumns: `repeat(${Math.max(1, Math.floor(store.designSurfaceWidth / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`,
+    gridTemplateRows: `repeat(${Math.max(1, Math.floor(store.designSurfaceHeight / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`
   }
+})
+
+const canvasWrapStyle = computed(() => {
+  const w = store.designSurfaceWidth
+  const h = store.designSurfaceHeight
+  const base: Record<string, string> = {
+    width: `${w}px`,
+    height: `${h}px`,
+    transformOrigin: 'top center'
+  }
+  if (!props.applyCanvasZoom) return base
+  return { ...base, transform: `scale(${store.canvas.zoom})` }
 })
 
 const rootElements = computed(() =>
@@ -100,8 +139,14 @@ const rootElements = computed(() =>
 )
 
 onUnmounted(() => {
+  window.removeEventListener('mousemove', onWindowPointerMove, true)
   window.removeEventListener('mouseup', finishPointerDrag, true)
 })
+
+/** 指针移出 .canvas 后仍要继续更新拖动，故在 window 上监听（与 canvas 上的 mousemove 二选一即可，逻辑共用） */
+const onWindowPointerMove = (event: MouseEvent): void => {
+  onMouseMove(event)
+}
 
 const onMouseMove = (event: MouseEvent): void => {
   const rect = canvasRef.value?.getBoundingClientRect()
@@ -117,14 +162,11 @@ const onMouseMove = (event: MouseEvent): void => {
     for (const row of initialRootLayout.value) {
       const element = store.elements.find((item) => item.id === row.id)
       if (!element) continue
-      const nx = Math.min(
-        Math.max(0, row.x + ddx),
-        store.canvas.width - element.width
-      )
-      const ny = Math.min(
-        Math.max(0, row.y + ddy),
-        store.canvas.height - element.height
-      )
+      /** 拖动过程中允许暂时超出画布，便于从外侧拖回；松手时在 finishPointerDrag 再夹紧 */
+      const rawX = row.x + ddx
+      const rawY = row.y + ddy
+      const nx = store.snap(rawX)
+      const ny = store.snap(rawY)
       store.updateElement(element.id, { x: nx, y: ny })
     }
     return
@@ -208,7 +250,9 @@ const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => 
 
   movePointerStart.value = { x: event.clientX, y: event.clientY }
   store.startLayoutDrag()
+  window.removeEventListener('mousemove', onWindowPointerMove, true)
   window.removeEventListener('mouseup', finishPointerDrag, true)
+  window.addEventListener('mousemove', onWindowPointerMove, true)
   window.addEventListener('mouseup', finishPointerDrag, true)
 }
 
@@ -229,8 +273,8 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
     store.addElement(
       {
         ...preset,
-        x: Math.min(Math.max(0, x), store.canvas.width - preset.width),
-        y: Math.min(Math.max(0, y), store.canvas.height - preset.height)
+        x: Math.min(Math.max(0, x), store.designSurfaceWidth - preset.width),
+        y: Math.min(Math.max(0, y), store.designSurfaceHeight - preset.height)
       },
       { hitElementId }
     )
@@ -240,8 +284,8 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   if (preset.kind === 'image') {
     const w = preset.width
     const h = preset.height
-    const x0 = Math.min(Math.max(0, x), store.canvas.width - w)
-    const y0 = Math.min(Math.max(0, y), store.canvas.height - h)
+    const x0 = Math.min(Math.max(0, x), store.designSurfaceWidth - w)
+    const y0 = Math.min(Math.max(0, y), store.designSurfaceHeight - h)
     if (!preset.hasLabel) {
       store.addElement(
         {
@@ -288,8 +332,8 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   if (preset.kind === 'table') {
     const w = preset.width
     const h = preset.height
-    const x0 = Math.min(Math.max(0, x), store.canvas.width - w)
-    const y0 = Math.min(Math.max(0, y), store.canvas.height - h)
+    const x0 = Math.min(Math.max(0, x), store.designSurfaceWidth - w)
+    const y0 = Math.min(Math.max(0, y), store.designSurfaceHeight - h)
     store.beginHistoryBatch()
     const tableEl = store.addElement(
       {
@@ -317,8 +361,8 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   if (preset.kind === 'dcomponent') {
     const w = preset.width
     const h = preset.height
-    const x0 = Math.min(Math.max(0, x), store.canvas.width - w)
-    const y0 = Math.min(Math.max(0, y), store.canvas.height - h)
+    const x0 = Math.min(Math.max(0, x), store.designSurfaceWidth - w)
+    const y0 = Math.min(Math.max(0, y), store.designSurfaceHeight - h)
     store.addElement(
       {
         kind: 'dcomponent',
@@ -342,8 +386,8 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   // column preset: add container + N children stacked vertically
   const containerW = preset.width
   const containerH = preset.height
-  const containerX = Math.min(Math.max(0, x), store.canvas.width - containerW)
-  const containerY = Math.min(Math.max(0, y), store.canvas.height - containerH)
+  const containerX = Math.min(Math.max(0, x), store.designSurfaceWidth - containerW)
+  const containerY = Math.min(Math.max(0, y), store.designSurfaceHeight - containerH)
 
   store.beginHistoryBatch()
   const container = store.addElement(
@@ -423,20 +467,17 @@ const onCanvasClick = (event: MouseEvent): void => {
 </script>
 
 <template>
-  <section class="design-area">
+  <section class="design-area" :class="{ 'design-area--embedded-virtual': embeddedVirtual }">
     <div
       class="canvas-wrap"
-      :style="{
-        width: `${store.canvas.width}px`,
-        height: `${store.canvas.height}px`,
-        transform: `scale(${store.canvas.zoom})`,
-        transformOrigin: 'top center'
-      }"
+      :class="{ 'canvas-wrap--embedded-virtual': embeddedVirtual }"
+      :style="canvasWrapStyle"
     >
       <div
         ref="canvasRef"
         class="canvas"
-        :style="gridBackground"
+        :class="{ 'canvas--no-grid': embeddedVirtual }"
+        :style="embeddedVirtual ? {} : gridBackground"
         @mousemove="onMouseMove"
         @mouseleave="onMouseLeave"
       >
@@ -454,6 +495,8 @@ const onCanvasClick = (event: MouseEvent): void => {
             :selected-element-ids="store.selectedElementIds"
             :layout-mode="store.canvas.layoutMode"
             :grid-size="store.canvas.gridSize"
+            :surface-width="store.designSurfaceWidth"
+            :surface-height="store.designSurfaceHeight"
             @mousedown="onElementMouseDown"
             @select="onTreeSelect"
           />
@@ -494,10 +537,23 @@ const onCanvasClick = (event: MouseEvent): void => {
   background: #0f131a;
 }
 
+.design-area--embedded-virtual {
+  padding: 0;
+  justify-content: stretch;
+  align-items: stretch;
+  background: transparent;
+  overflow: hidden;
+}
+
 .canvas-wrap {
   flex-shrink: 0;
   border: 1px solid #2c3342;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-wrap--embedded-virtual {
+  border: none;
+  box-shadow: none;
 }
 
 .canvas {
@@ -505,6 +561,15 @@ const onCanvasClick = (event: MouseEvent): void => {
   width: 100%;
   height: 100%;
   background-color: #1a1f2b;
+}
+
+.design-area--embedded-virtual .canvas {
+  background-color: transparent;
+}
+
+/* 虚拟设备内不显示对齐网格线（与标准画布无关） */
+.canvas--no-grid::after {
+  display: none !important;
 }
 
 /* 网格在元素之下，避免压住选中虚线；线较淡以减轻与 1px 边框的视觉冲突 */

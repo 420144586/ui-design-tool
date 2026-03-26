@@ -15,7 +15,7 @@ const route = useRoute()
             :class="{ active: route.path.endsWith('/generated') }"
             @click="router.push('/test/generated')"
           >
-            生成子页面
+            预览页面
           </button>
           <button @click="router.push('/')">返回设计器</button>
         </div>

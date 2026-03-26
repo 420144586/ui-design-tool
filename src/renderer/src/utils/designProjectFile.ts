@@ -1,4 +1,4 @@
-import type { CanvasConfig, DesignElement } from '@renderer/types/design'
+import type { CanvasConfig, DesignElement, VirtualEnvConfig, WorkspaceMode } from '@renderer/types/design'
 
 export const DESIGN_PROJECT_FORMAT = 'design-tool-project' as const
 export const DESIGN_PROJECT_VERSION = 1 as const
@@ -10,12 +10,15 @@ export interface DesignProjectFileV1 {
   canvas: CanvasConfig
   elements: DesignElement[]
   nextSerial: number
+  workspaceMode?: WorkspaceMode
+  virtualEnv?: VirtualEnvConfig
 }
 
 export const stringifyDesignProjectFile = (
   canvas: CanvasConfig,
   elements: DesignElement[],
-  nextSerial: number
+  nextSerial: number,
+  options?: { workspaceMode?: WorkspaceMode; virtualEnv?: VirtualEnvConfig }
 ): string =>
   JSON.stringify(
     {
@@ -24,7 +27,11 @@ export const stringifyDesignProjectFile = (
       savedAt: new Date().toISOString(),
       canvas: { ...canvas },
       elements: JSON.parse(JSON.stringify(elements)) as DesignElement[],
-      nextSerial
+      nextSerial,
+      ...(options?.workspaceMode != null ? { workspaceMode: options.workspaceMode } : {}),
+      ...(options?.virtualEnv != null
+        ? { virtualEnv: JSON.parse(JSON.stringify(options.virtualEnv)) as VirtualEnvConfig }
+        : {})
     },
     null,
     2
@@ -45,12 +52,21 @@ export const parseDesignProjectFile = (raw: string): DesignProjectFileV1 | null 
   if (!Array.isArray(o.elements)) return null
   const nextSerial = Number(o.nextSerial)
   if (!Number.isFinite(nextSerial)) return null
+  const workspaceMode =
+    o.workspaceMode === 'virtual-env' || o.workspaceMode === 'standard'
+      ? o.workspaceMode
+      : undefined
+  const virtualEnv =
+    o.virtualEnv && typeof o.virtualEnv === 'object' ? (o.virtualEnv as VirtualEnvConfig) : undefined
+
   return {
     format: DESIGN_PROJECT_FORMAT,
     version: 1,
     savedAt: typeof o.savedAt === 'string' ? o.savedAt : '',
     canvas: o.canvas as CanvasConfig,
     elements: o.elements as DesignElement[],
-    nextSerial: Math.floor(nextSerial)
+    nextSerial: Math.floor(nextSerial),
+    ...(workspaceMode != null ? { workspaceMode } : {}),
+    ...(virtualEnv != null ? { virtualEnv } : {})
   }
 }

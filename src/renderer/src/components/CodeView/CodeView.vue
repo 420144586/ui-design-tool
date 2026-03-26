@@ -10,14 +10,19 @@ import {
 
 const store = useDesignStore()
 
-const templateCode = computed(() => generateTemplateCode(store.elements, store.canvas.layoutMode))
-const scriptCode = computed(() => generateScriptCode(store.elements))
+/** 与保存/导出一致：始终基于标准工作区权威数据，与虚拟预览中的临时编辑分离 */
+const codegenCanvas = computed(() => ({
+  width: store.canvas.width,
+  height: store.canvas.height,
+  gridSize: store.canvas.gridSize
+}))
+
+const templateCode = computed(() =>
+  generateTemplateCode(store.canonicalElements, store.canvas.layoutMode)
+)
+const scriptCode = computed(() => generateScriptCode(store.canonicalElements))
 const styleCode = computed(() =>
-  generateStyleCode(store.elements, store.canvas.layoutMode, {
-    width: store.canvas.width,
-    height: store.canvas.height,
-    gridSize: store.canvas.gridSize
-  })
+  generateStyleCode(store.canonicalElements, store.canvas.layoutMode, codegenCanvas.value)
 )
 
 const currentCode = computed(() => {
@@ -27,11 +32,7 @@ const currentCode = computed(() => {
 })
 
 const exportVueFile = async (): Promise<void> => {
-  const content = generateVueSfcCode(store.elements, store.canvas.layoutMode, {
-    width: store.canvas.width,
-    height: store.canvas.height,
-    gridSize: store.canvas.gridSize
-  })
+  const content = generateVueSfcCode(store.canonicalElements, store.canvas.layoutMode, codegenCanvas.value)
   await window.api.exportVueFile(content, 'generated-component.vue')
 }
 </script>

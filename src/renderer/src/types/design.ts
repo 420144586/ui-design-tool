@@ -2,6 +2,34 @@ export type LayoutMode = 'absolute' | 'grid'
 
 export type ViewMode = 'design' | 'template' | 'script' | 'style'
 
+/** 设计区工作区：标准（左侧元素库）或虚拟环境（左侧环境属性 + 中间设备框预览） */
+export type WorkspaceMode = 'standard' | 'virtual-env'
+
+/** 虚拟设备框在预览区内的 CSS position */
+export type VirtualEnvPosition = 'relative' | 'absolute' | 'fixed' | 'static'
+
+/** 集成业务页前的环境预览（尺寸、背景、顶栏/底栏占位等） */
+export interface VirtualEnvConfig {
+  /** 与画布尺寸同步保存，展示时以 canvas 为准 */
+  width: number
+  height: number
+  background: string
+  /** 设备外框在预览区内的 CSS position */
+  position: VirtualEnvPosition
+  /** 预设状态栏 / 标题栏占位 */
+  presetTitleBar: boolean
+  /** 预设底部栏占位 */
+  presetFooter: boolean
+  /** TitleBar 占位层的 CSS position（叠在满屏画布之上） */
+  presetTitleBarPosition: VirtualEnvPosition
+  /** Footer 占位层的 CSS position */
+  presetFooterPosition: VirtualEnvPosition
+  /** TitleBar 占位高度（px） */
+  presetTitleBarHeight: number
+  /** Footer 占位高度（px） */
+  presetFooterHeight: number
+}
+
 /** 动画与 Vue Transition 的衔接方式（导出代码） */
 export type AnimationTimingMode = 'visible' | 'hidden' | 'v-if' | 'v-show'
 
@@ -34,6 +62,10 @@ export interface DesignElement {
   y: number
   width: number
   height: number
+  /** 为 true 时 width 表示父级内容宽度（根级为设计表面宽度）的百分比 */
+  widthIsPercent?: boolean
+  /** 为 true 时 height 表示父级内容高度（根级为设计表面高度）的百分比 */
+  heightIsPercent?: boolean
   background: string
   /** 为 true 时背景填充为 transparent，保留 background / 渐变数据便于取消勾选后恢复 */
   backgroundTransparent?: boolean
