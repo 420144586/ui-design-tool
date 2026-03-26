@@ -2,12 +2,16 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { useDesignStore } from '@renderer/store/design'
 import type { DesignElement } from '@renderer/types/design'
+import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
 import DesignTreeNode from './DesignTreeNode.vue'
 
 const store = useDesignStore()
 const canvasRef = ref<HTMLElement | null>(null)
-const movingElementId = ref<string>('')
-const moveOffset = ref({ x: 0, y: 0 })
+/** 正在拖动的顶层节点 id（多选时为多个根） */
+const movingRootIds = ref<string[]>([])
+const dragStartCanvas = ref({ x: 0, y: 0 })
+/** 拖动开始时各根节点的 x/y 快照 */
+const initialRootLayout = ref<{ id: string; x: number; y: number }[]>([])
 /** 用于判断是否发生拖动，避免纯点击也触发挂接询问 */
 const movePointerStart = ref<{ x: number; y: number } | null>(null)
 /** 拖放结束后吞掉紧随的一次 canvas click，防止误触发「从预设添加」 */
@@ -18,10 +22,11 @@ const DRAG_THRESHOLD_PX = 4
 const finishPointerDrag = (event: MouseEvent): void => {
   window.removeEventListener('mouseup', finishPointerDrag, true)
   store.endLayoutDrag()
-  const movedId = movingElementId.value
-  movingElementId.value = ''
+  const roots = [...movingRootIds.value]
+  movingRootIds.value = []
+  initialRootLayout.value = []
 
-  if (!movedId || !movePointerStart.value) {
+  if (roots.length === 0 || !movePointerStart.value) {
     movePointerStart.value = null
     return
   }
@@ -35,28 +40,40 @@ const finishPointerDrag = (event: MouseEvent): void => {
 
   suppressNextCanvasClick.value = true
 
-  const moved = store.elements.find((item) => item.id === movedId)
-  if (!moved) return
+  const movedSet = new Set(roots)
 
   const stack = document.elementsFromPoint(event.clientX, event.clientY)
   let dropTargetId: string | null = null
   for (const node of stack) {
     if (!(node instanceof HTMLElement)) continue
     const id = node.dataset.elementId
-    if (!id || id === movedId) continue
+    if (!id || movedSet.has(id)) continue
     const el = store.elements.find((item) => item.id === id)
     if (!el) continue
     if (el.kind === 'table') continue
-    if (store.isDescendantOf(movedId, id)) continue
+    let invalid = false
+    for (const r of roots) {
+      if (store.isDescendantOf(r, id)) {
+        invalid = true
+        break
+      }
+    }
+    if (invalid) continue
     dropTargetId = id
     break
   }
 
-  if (!dropTargetId || moved.parentId === dropTargetId) return
+  if (!dropTargetId) return
+  if (roots.every((rid) => store.elements.find((e) => e.id === rid)?.parentId === dropTargetId)) {
+    return
+  }
 
-  const ok = window.confirm('是否将此元素作为子元素加入？')
-  if (ok) {
-    store.reparentElement(movedId, dropTargetId)
+  const msg =
+    roots.length === 1
+      ? '是否将此元素作为子元素加入？'
+      : `是否将选中的 ${roots.length} 个元素作为子元素加入？`
+  if (window.confirm(msg)) {
+    store.reparentElements(roots, dropTargetId)
   }
 }
 
@@ -71,6 +88,8 @@ const layerStyle = computed(() => {
   if (store.canvas.layoutMode !== 'grid') return {}
   return {
     display: 'grid',
+    /** 与子项 grid 占位（含 1/-1 跨满）配合，使 place-self/justify-self 在可视区域内生效 */
+    placeItems: 'center',
     gridTemplateColumns: `repeat(${Math.max(1, Math.floor(store.canvas.width / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`,
     gridTemplateRows: `repeat(${Math.max(1, Math.floor(store.canvas.height / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`
   }
@@ -90,15 +109,24 @@ const onMouseMove = (event: MouseEvent): void => {
   const zoom = store.canvas.zoom
   const x = store.snap((event.clientX - rect.left) / zoom)
   const y = store.snap((event.clientY - rect.top) / zoom)
-  if (movingElementId.value) {
-    const element = store.elements.find((item) => item.id === movingElementId.value)
-    if (!element) return
-    const nextX = store.snap((event.clientX - rect.left) / zoom - moveOffset.value.x)
-    const nextY = store.snap((event.clientY - rect.top) / zoom - moveOffset.value.y)
-    store.updateElement(element.id, {
-      x: Math.min(Math.max(0, nextX), store.canvas.width - element.width),
-      y: Math.min(Math.max(0, nextY), store.canvas.height - element.height)
-    })
+  if (movingRootIds.value.length > 0) {
+    const curX = store.snap((event.clientX - rect.left) / zoom)
+    const curY = store.snap((event.clientY - rect.top) / zoom)
+    const ddx = curX - dragStartCanvas.value.x
+    const ddy = curY - dragStartCanvas.value.y
+    for (const row of initialRootLayout.value) {
+      const element = store.elements.find((item) => item.id === row.id)
+      if (!element) continue
+      const nx = Math.min(
+        Math.max(0, row.x + ddx),
+        store.canvas.width - element.width
+      )
+      const ny = Math.min(
+        Math.max(0, row.y + ddy),
+        store.canvas.height - element.height
+      )
+      store.updateElement(element.id, { x: nx, y: ny })
+    }
     return
   }
   if (!store.activePreset) {
@@ -118,17 +146,67 @@ const onMouseLeave = (): void => {
   store.clearDragPreview()
 }
 
+/** 表格单元格空白处点击等仍走 click；须与 Ctrl 多选一致，且勿与 mousedown 重复覆盖 */
+const onTreeSelect = (id: string, event?: MouseEvent): void => {
+  if (event && (event.ctrlKey || event.metaKey)) {
+    store.toggleSelectElement(id)
+  } else {
+    store.selectElement(id)
+  }
+}
+
 const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => {
   const rect = canvasRef.value?.getBoundingClientRect()
   if (!rect) return
   const zoom = store.canvas.zoom
-  movingElementId.value = element.id
-  movePointerStart.value = { x: event.clientX, y: event.clientY }
-  moveOffset.value = {
-    x: (event.clientX - rect.left) / zoom - element.x,
-    y: (event.clientY - rect.top) / zoom - element.y
+
+  const mod = event.ctrlKey || event.metaKey
+  if (mod) {
+    store.toggleSelectElement(element.id)
+    if (!store.selectedElementIds.includes(element.id)) {
+      return
+    }
+  } else if (!store.selectedElementIds.includes(element.id)) {
+    store.selectElement(element.id)
   }
-  store.selectElement(element.id)
+
+  /**
+   * 居中时视觉位置由 CSS（% / grid 跨轨）控制，数据里的 x/y 仍是旧值；按下时根据 DOM 同步左上角并关闭居中。
+   */
+  const shell = (event.target as HTMLElement).closest('[data-element-id]') as HTMLElement | null
+  if (
+    shell?.dataset.elementId === element.id &&
+    (element.layoutCenterHorizontal || element.layoutCenterVertical)
+  ) {
+    const elRect = shell.getBoundingClientRect()
+    const topX = store.snap((elRect.left - rect.left) / zoom)
+    const topY = store.snap((elRect.top - rect.top) / zoom)
+    store.updateElement(
+      element.id,
+      {
+        x: topX,
+        y: topY,
+        layoutCenterHorizontal: false,
+        layoutCenterVertical: false
+      },
+      { skipHistory: true }
+    )
+  }
+
+  const roots = store.selectionRoots(store.selectedElementIds)
+  if (roots.length === 0) return
+
+  dragStartCanvas.value = {
+    x: store.snap((event.clientX - rect.left) / zoom),
+    y: store.snap((event.clientY - rect.top) / zoom)
+  }
+  initialRootLayout.value = roots.map((rid) => {
+    const el = store.elements.find((e) => e.id === rid)
+    return { id: rid, x: el?.x ?? 0, y: el?.y ?? 0 }
+  })
+  movingRootIds.value = roots
+
+  movePointerStart.value = { x: event.clientX, y: event.clientY }
   store.startLayoutDrag()
   window.removeEventListener('mouseup', finishPointerDrag, true)
   window.addEventListener('mouseup', finishPointerDrag, true)
@@ -286,12 +364,10 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   )
 
   const childCount = Math.max(1, Math.floor(preset.childCount))
-  const grid = store.canvas.gridSize
-  const childBaseH = Math.max(grid, Math.floor(containerH / childCount / grid) * grid)
-
+  const heights = computeColumnChildHeights(containerH, childCount)
+  let yOffset = 0
   for (let i = 0; i < childCount; i += 1) {
-    const isLast = i === childCount - 1
-    const childH = isLast ? containerH - childBaseH * (childCount - 1) : childBaseH
+    const childH = heights[i] ?? 0
     if (childH <= 0) continue
     store.addElement(
       {
@@ -299,7 +375,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         type: 'div',
         name: `ColumnChild-${container.serial}-${i + 1}`,
         x: containerX,
-        y: containerY + i * childBaseH,
+        y: containerY + yOffset,
         width: containerW,
         height: childH,
         background: preset.background,
@@ -308,6 +384,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
       },
       { select: false, parentId: container.id }
     )
+    yOffset += childH
   }
   store.endHistoryBatch()
 }
@@ -324,7 +401,7 @@ const onLayerPresetClickCapture = (event: MouseEvent): void => {
     event.stopImmediatePropagation()
     return
   }
-  if (movingElementId.value) return
+  if (movingRootIds.value.length > 0) return
   placeActivePresetAtPointer(event)
   event.stopPropagation()
   event.stopImmediatePropagation()
@@ -374,11 +451,11 @@ const onCanvasClick = (event: MouseEvent): void => {
             :key="element.id"
             :element="element"
             :elements="store.elements"
-            :selected-element-id="store.selectedElementId"
+            :selected-element-ids="store.selectedElementIds"
             :layout-mode="store.canvas.layoutMode"
             :grid-size="store.canvas.gridSize"
             @mousedown="onElementMouseDown"
-            @select="store.selectElement"
+            @select="onTreeSelect"
           />
         </div>
         <div
@@ -430,21 +507,23 @@ const onCanvasClick = (event: MouseEvent): void => {
   background-color: #1a1f2b;
 }
 
+/* 网格在元素之下，避免压住选中虚线；线较淡以减轻与 1px 边框的视觉冲突 */
 .canvas::after {
   content: '';
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+    linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
   background-size: var(--grid-size) var(--grid-size);
   pointer-events: none;
-  z-index: 9999;
+  z-index: 1;
 }
 
 .layer {
   position: absolute;
   inset: 0;
+  z-index: 2;
 }
 
 .preview {

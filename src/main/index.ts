@@ -96,17 +96,23 @@ app.whenReady().then(() => {
     return { ok: true, canceled: false, filePath, content }
   })
 
-  ipcMain.handle('save-design-project', async (_, payload: { content: string }) => {
+  ipcMain.handle('save-design-project', async (_, payload: { content: string; filePath?: string }) => {
     const designSavesDir = getDesignSavesDir()
     await mkdir(designSavesDir, { recursive: true })
-    const { canceled, filePath } = await dialog.showSaveDialog({
-      title: '保存设计稿',
-      defaultPath: join(designSavesDir, '未命名.design.json'),
-      filters: [{ name: '设计稿 JSON', extensions: ['json'] }]
-    })
-    if (canceled || !filePath) return { canceled: true }
-    await writeFile(filePath, payload.content, 'utf-8')
-    return { canceled: false, filePath }
+    
+    let targetPath = payload.filePath
+    if (!targetPath) {
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: '保存设计稿',
+        defaultPath: join(designSavesDir, '未命名.design.json'),
+        filters: [{ name: '设计稿 JSON', extensions: ['json'] }]
+      })
+      if (canceled || !filePath) return { canceled: true }
+      targetPath = filePath
+    }
+
+    await writeFile(targetPath, payload.content, 'utf-8')
+    return { canceled: false, filePath: targetPath }
   })
 
   ipcMain.handle('load-design-project', async () => {

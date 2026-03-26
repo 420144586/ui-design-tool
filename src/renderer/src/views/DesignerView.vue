@@ -16,8 +16,32 @@ import { parseDesignProjectFile, stringifyDesignProjectFile } from '@renderer/ut
 const store = useDesignStore()
 const router = useRouter()
 
+/** 工具栏居中：直接 updateElement，避免模板里绑定 store.action 在部分环境下不是函数 */
+function onToolbarLayoutCenter(mode: 'horizontal' | 'vertical' | 'both'): void {
+  const id = store.selectedElementId
+  if (!id) return
+  if (mode === 'horizontal') {
+    store.updateElement(id, { layoutCenterHorizontal: true, layoutCenterVertical: false })
+  } else if (mode === 'vertical') {
+    store.updateElement(id, { layoutCenterHorizontal: false, layoutCenterVertical: true })
+  } else {
+    store.updateElement(id, { layoutCenterHorizontal: true, layoutCenterVertical: true })
+  }
+}
+
 const isLoading = ref(false)
 const loadingText = ref('加载中...')
+const toastMessage = ref('')
+const currentFilePath = ref<string | null>(null)
+
+const showToast = (msg: string) => {
+  toastMessage.value = msg
+  setTimeout(() => {
+    if (toastMessage.value === msg) {
+      toastMessage.value = ''
+    }
+  }, 3000)
+}
 
 const views: Array<{ key: ViewMode; label: string }> = [
   { key: 'design', label: '设计视图' },
@@ -102,11 +126,11 @@ type LoadDesignProjectResult = {
   content?: string
 }
 
-const invokeSaveDesignProject = async (content: string): Promise<SaveDesignProjectResult> => {
+const invokeSaveDesignProject = async (content: string, filePath?: string): Promise<SaveDesignProjectResult> => {
   if (typeof window.api?.saveDesignProject === 'function') {
-    return window.api.saveDesignProject(content)
+    return window.api.saveDesignProject(content, filePath)
   }
-  const fallback = await window.electron.ipcRenderer.invoke('save-design-project', { content })
+  const fallback = await window.electron.ipcRenderer.invoke('save-design-project', { content, filePath })
   return (fallback ?? { canceled: true }) as SaveDesignProjectResult
 }
 
@@ -118,17 +142,26 @@ const invokeLoadDesignProject = async (): Promise<LoadDesignProjectResult> => {
   return (fallback ?? { canceled: true }) as LoadDesignProjectResult
 }
 
-const saveDesignProject = async (): Promise<void> => {
+const saveDesignProject = async (silent: boolean = false): Promise<void> => {
   try {
-    isLoading.value = true
-    loadingText.value = '正在保存...'
+    if (!silent) {
+      isLoading.value = true
+      loadingText.value = '正在保存...'
+    }
     const content = stringifyDesignProjectFile(store.canvas, store.elements, store.nextSerial)
-    const result = await invokeSaveDesignProject(content)
+    const result = await invokeSaveDesignProject(content, silent && currentFilePath.value ? currentFilePath.value : undefined)
     if (!result.canceled && result.filePath) {
-      window.alert(`设计稿已保存到：\n${result.filePath}`)
+      currentFilePath.value = result.filePath
+      if (silent) {
+        showToast('保存成功')
+      } else {
+        window.alert(`设计稿已保存到：\n${result.filePath}`)
+      }
     }
   } finally {
-    isLoading.value = false
+    if (!silent) {
+      isLoading.value = false
+    }
   }
 }
 
@@ -144,6 +177,9 @@ const loadDesignProject = async (): Promise<void> => {
       return
     }
     store.applyDesignProjectFile(data)
+    if (result.filePath) {
+      currentFilePath.value = result.filePath
+    }
   } finally {
     isLoading.value = false
   }
@@ -160,6 +196,17 @@ const isTypingInField = (target: EventTarget | null): boolean => {
 
 const onDesignHotkeys = (event: KeyboardEvent): void => {
   if (store.activeView !== 'design') return
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault()
+    if (currentFilePath.value) {
+      saveDesignProject(true)
+    } else {
+      saveDesignProject(false)
+    }
+    return
+  }
+
   if (isTypingInField(event.target)) return
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
     event.preventDefault()
@@ -282,6 +329,42 @@ onUnmounted(() => {
             >
               删除
             </button>
+            <template v-if="store.selectedElementId">
+              <span class="tb-sep" aria-hidden="true" />
+              <button
+                type="button"
+                class="tb-btn"
+                :disabled="!store.canSelectParent"
+                title="切换到父级节点。根节点或选中 Column 容器本身时无父级；请先选中 Column 内的子块再使用。"
+                @click="store.selectParentOfSelected()"
+              >
+                选中上级
+              </button>
+              <button
+                type="button"
+                class="tb-btn"
+                title="在父容器内垂直居中（top:50% + translateY）"
+                @click="onToolbarLayoutCenter('vertical')"
+              >
+                垂直居中
+              </button>
+              <button
+                type="button"
+                class="tb-btn"
+                title="在父容器内水平居中（left:50% + translateX）"
+                @click="onToolbarLayoutCenter('horizontal')"
+              >
+                水平居中
+              </button>
+              <button
+                type="button"
+                class="tb-btn"
+                title="在父容器内水平与垂直均居中"
+                @click="onToolbarLayoutCenter('both')"
+              >
+                居中
+              </button>
+            </template>
           </footer>
         </div>
         <CodeView v-else />
@@ -303,6 +386,10 @@ onUnmounted(() => {
     <div v-if="isLoading" class="global-loading-overlay">
       <div class="loading-spinner"></div>
       <div class="loading-text">{{ loadingText }}</div>
+    </div>
+
+    <div class="toast-container" :class="{ 'toast-visible': toastMessage }">
+      {{ toastMessage }}
     </div>
   </div>
 </template>
@@ -456,11 +543,19 @@ select,
 .design-toolbar {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
   border-top: 1px solid #2a2f3a;
   background: #131822;
+}
+
+.tb-sep {
+  width: 1px;
+  height: 22px;
+  background: #2f3748;
+  flex-shrink: 0;
 }
 
 .tb-btn {
@@ -547,5 +642,27 @@ select,
   to {
     transform: rotate(360deg);
   }
+}
+
+.toast-container {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-20px);
+  background: #4f7cff;
+  color: #fff;
+  padding: 8px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10000;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 </style>

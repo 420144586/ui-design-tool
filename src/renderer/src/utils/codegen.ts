@@ -1,4 +1,11 @@
 import type { CanvasConfig, DesignElement, LayoutMode } from '@renderer/types/design'
+import { cssBackgroundFill } from '@renderer/utils/elementBackground'
+import { boxBorderCssLines } from '@renderer/utils/elementBorder'
+import {
+  gridPlacementForElement,
+  layoutCenterCssForAbsolute,
+  layoutCenterCssForGrid
+} from '@renderer/utils/layoutCenter'
 
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
@@ -138,14 +145,6 @@ export const generateScriptCode = (elements: DesignElement[]): string => {
   return ['<script setup lang="ts">', ...body, '</script>'].join('\n')
 }
 
-const toGridPlacement = (element: DesignElement, gridSize: number): { col: number; row: number; colSpan: number; rowSpan: number } => {
-  const col = Math.floor(element.x / gridSize) + 1
-  const row = Math.floor(element.y / gridSize) + 1
-  const colSpan = Math.max(1, Math.ceil(element.width / gridSize))
-  const rowSpan = Math.max(1, Math.ceil(element.height / gridSize))
-  return { col, row, colSpan, rowSpan }
-}
-
 export const generateStyleCode = (
   elements: DesignElement[],
   layoutMode: LayoutMode,
@@ -157,6 +156,7 @@ export const generateStyleCode = (
           '.canvas-root {',
           '  position: relative;',
           '  display: grid;',
+          '  place-items: center;',
           `  grid-template-columns: repeat(${Math.max(1, Math.floor(canvas.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
           `  grid-template-rows: repeat(${Math.max(1, Math.floor(canvas.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
           `  width: ${canvas.width}px;`,
@@ -174,21 +174,28 @@ export const generateStyleCode = (
     const relativeY = parent ? element.y - parent.y : element.y
     const hasChildren = elementHasChildren(elements, element.id)
 
+    const commonStyles: string[] = []
+    if (element.color) commonStyles.push(`  color: ${element.color};`)
+    if (element.fontSize) commonStyles.push(`  font-size: ${element.fontSize}px;`)
+    if (element.fontWeight) commonStyles.push(`  font-weight: ${element.fontWeight};`)
+    if (element.textAlign) commonStyles.push(`  text-align: ${element.textAlign};`)
+    if (element.borderRadius) commonStyles.push(`  border-radius: ${element.borderRadius}px;`)
+    commonStyles.push(...boxBorderCssLines(element))
+
     if (element.kind === 'image' && element.type === 'img') {
       if (layoutMode === 'grid') {
-        const grid = toGridPlacement(
-          { ...element, x: relativeX, y: relativeY },
-          canvas.gridSize
-        )
+        const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
         return [
           `.${element.id} {`,
-          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
-          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  grid-column: ${gp.gridColumn};`,
+          `  grid-row: ${gp.gridRow};`,
+          ...layoutCenterCssForGrid(element),
           `  width: ${element.width}px;`,
           `  height: ${element.height}px;`,
           `  opacity: ${element.opacity};`,
           '  object-fit: cover;',
           '  display: block;',
+          ...commonStyles,
           '}'
         ].join('\n')
       }
@@ -196,13 +203,13 @@ export const generateStyleCode = (
         `.${element.id} {`,
         '  position: absolute;',
         `  z-index: ${element.serial};`,
-        `  left: ${relativeX}px;`,
-        `  top: ${relativeY}px;`,
+        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
         `  width: ${element.width}px;`,
         `  height: ${element.height}px;`,
         `  opacity: ${element.opacity};`,
         '  object-fit: cover;',
         '  display: block;',
+        ...commonStyles,
         '}'
       ].join('\n')
     }
@@ -210,17 +217,15 @@ export const generateStyleCode = (
     if (element.kind === 'image' && element.type === 'div') {
       const gap = element.gap ?? 10
       if (layoutMode === 'grid') {
-        const grid = toGridPlacement(
-          { ...element, x: relativeX, y: relativeY },
-          canvas.gridSize
-        )
+        const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
         return [
           `.${element.id} {`,
-          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
-          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  grid-column: ${gp.gridColumn};`,
+          `  grid-row: ${gp.gridRow};`,
+          ...layoutCenterCssForGrid(element),
           `  width: ${element.width}px;`,
           `  height: ${element.height}px;`,
-          `  background: ${element.background};`,
+          `  background: ${cssBackgroundFill(element)};`,
           `  opacity: ${element.opacity};`,
           '  position: relative;',
           '  box-sizing: border-box;',
@@ -228,6 +233,7 @@ export const generateStyleCode = (
           '  flex-direction: row;',
           '  align-items: center;',
           `  gap: ${gap}px;`,
+          ...commonStyles,
           '}'
         ].join('\n')
       }
@@ -235,17 +241,17 @@ export const generateStyleCode = (
         `.${element.id} {`,
         '  position: absolute;',
         `  z-index: ${element.serial};`,
-        `  left: ${relativeX}px;`,
-        `  top: ${relativeY}px;`,
+        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
         `  width: ${element.width}px;`,
         `  height: ${element.height}px;`,
-        `  background: ${element.background};`,
+        `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  box-sizing: border-box;',
         '  display: flex;',
         '  flex-direction: row;',
         '  align-items: center;',
         `  gap: ${gap}px;`,
+        ...commonStyles,
         '}'
       ].join('\n')
     }
@@ -253,22 +259,21 @@ export const generateStyleCode = (
     if (element.kind === 'table') {
       const bc = element.borderColor ?? '#d0d0d0'
       if (layoutMode === 'grid') {
-        const grid = toGridPlacement(
-          { ...element, x: relativeX, y: relativeY },
-          canvas.gridSize
-        )
+        const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
         return [
           `.${element.id} {`,
-          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
-          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  grid-column: ${gp.gridColumn};`,
+          `  grid-row: ${gp.gridRow};`,
+          ...layoutCenterCssForGrid(element),
           `  width: ${element.width}px;`,
           `  height: ${element.height}px;`,
-          `  background: ${element.background};`,
+          `  background: ${cssBackgroundFill(element)};`,
           `  opacity: ${element.opacity};`,
           '  position: relative;',
           '  border-collapse: collapse;',
           '  table-layout: fixed;',
           '  box-sizing: border-box;',
+          ...commonStyles,
           '}',
           `.${element.id} td {`,
           `  border: 1px solid ${bc};`,
@@ -281,15 +286,15 @@ export const generateStyleCode = (
         `.${element.id} {`,
         '  position: absolute;',
         `  z-index: ${element.serial};`,
-        `  left: ${relativeX}px;`,
-        `  top: ${relativeY}px;`,
+        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
         `  width: ${element.width}px;`,
         `  height: ${element.height}px;`,
-        `  background: ${element.background};`,
+        `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  border-collapse: collapse;',
         '  table-layout: fixed;',
         '  box-sizing: border-box;',
+        ...commonStyles,
         '}',
         `.${element.id} td {`,
         `  border: 1px solid ${bc};`,
@@ -308,6 +313,7 @@ export const generateStyleCode = (
         '  object-fit: cover;',
         '  display: block;',
         `  opacity: ${element.opacity};`,
+        ...commonStyles,
         '}'
       ].join('\n')
     }
@@ -325,45 +331,114 @@ export const generateStyleCode = (
         '  max-width: none;',
         '  height: 100%;',
         '  box-sizing: border-box;',
-        `  background: ${element.background};`,
+        `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  display: flex;',
         '  align-items: center;',
         '  justify-content: center;',
+        ...commonStyles,
+        '}'
+      ].join('\n')
+    }
+
+    if (
+      parent?.kind === 'column' &&
+      (element.kind === 'div' || element.kind === 'column')
+    ) {
+      return [
+        `.${element.id} {`,
+        '  position: relative;',
+        '  flex: 1 1 0;',
+        '  min-height: 0;',
+        '  width: 100%;',
+        '  box-sizing: border-box;',
+        `  background: ${cssBackgroundFill(element)};`,
+        `  opacity: ${element.opacity};`,
+        '  display: flex;',
+        '  align-items: center;',
+        '  justify-content: center;',
+        ...commonStyles,
         '}'
       ].join('\n')
     }
 
     if (layoutMode === 'grid') {
-      const grid = toGridPlacement({ ...element, x: relativeX, y: relativeY }, canvas.gridSize)
+      const gp = gridPlacementForElement(element, relativeX, relativeY, canvas.gridSize)
       if (!hasChildren) {
         return [
           `.${element.id} {`,
-          `  grid-column: ${grid.col} / span ${grid.colSpan};`,
-          `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+          `  grid-column: ${gp.gridColumn};`,
+          `  grid-row: ${gp.gridRow};`,
+          ...layoutCenterCssForGrid(element),
           `  width: ${element.width}px;`,
           `  height: ${element.height}px;`,
-          `  background: ${element.background};`,
+          `  background: ${cssBackgroundFill(element)};`,
           `  opacity: ${element.opacity};`,
           '  position: relative;',
           '  display: flex;',
           '  align-items: center;',
           '  justify-content: center;',
+          ...commonStyles,
+          '}'
+        ].join('\n')
+      }
+      if (element.kind === 'column' && hasChildren) {
+        return [
+          `.${element.id} {`,
+          `  grid-column: ${gp.gridColumn};`,
+          `  grid-row: ${gp.gridRow};`,
+          ...layoutCenterCssForGrid(element),
+          `  width: ${element.width}px;`,
+          `  height: ${element.height}px;`,
+          `  background: ${cssBackgroundFill(element)};`,
+          `  opacity: ${element.opacity};`,
+          '  position: relative;',
+          '  display: flex;',
+          '  flex-direction: column;',
+          '  align-items: stretch;',
+          '  justify-content: flex-start;',
+          '  box-sizing: border-box;',
+          '  overflow: hidden;',
+          ...commonStyles,
           '}'
         ].join('\n')
       }
       return [
         `.${element.id} {`,
-        `  grid-column: ${grid.col} / span ${grid.colSpan};`,
-        `  grid-row: ${grid.row} / span ${grid.rowSpan};`,
+        `  grid-column: ${gp.gridColumn};`,
+        `  grid-row: ${gp.gridRow};`,
+        ...layoutCenterCssForGrid(element),
         `  width: ${element.width}px;`,
         `  height: ${element.height}px;`,
-        `  background: ${element.background};`,
+        `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
         '  display: grid;',
+        '  place-items: center;',
         `  grid-template-columns: repeat(${Math.max(1, Math.floor(element.width / canvas.gridSize))}, ${canvas.gridSize}px);`,
         `  grid-template-rows: repeat(${Math.max(1, Math.floor(element.height / canvas.gridSize))}, ${canvas.gridSize}px);`,
+        ...commonStyles,
+        '}'
+      ].join('\n')
+    }
+
+    if (element.kind === 'column' && hasChildren) {
+      return [
+        `.${element.id} {`,
+        '  position: absolute;',
+        `  z-index: ${element.serial};`,
+        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+        `  width: ${element.width}px;`,
+        `  height: ${element.height}px;`,
+        `  background: ${cssBackgroundFill(element)};`,
+        `  opacity: ${element.opacity};`,
+        '  display: flex;',
+        '  flex-direction: column;',
+        '  align-items: stretch;',
+        '  justify-content: flex-start;',
+        '  box-sizing: border-box;',
+        '  overflow: hidden;',
+        ...commonStyles,
         '}'
       ].join('\n')
     }
@@ -372,15 +447,15 @@ export const generateStyleCode = (
       `.${element.id} {`,
       '  position: absolute;',
       `  z-index: ${element.serial};`,
-      `  left: ${relativeX}px;`,
-      `  top: ${relativeY}px;`,
+      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
       `  width: ${element.width}px;`,
       `  height: ${element.height}px;`,
-      `  background: ${element.background};`,
+      `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
       hasChildren ? '' : '  display: flex;',
       hasChildren ? '' : '  align-items: center;',
       hasChildren ? '' : '  justify-content: center;',
+      ...commonStyles,
       '}'
     ]
       .filter((line) => line !== '')

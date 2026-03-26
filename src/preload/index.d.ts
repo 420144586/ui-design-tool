@@ -16,7 +16,7 @@ interface CustomAPI {
     filePath?: string
     content?: string
   }>
-  saveDesignProject: (content: string) => Promise<{
+  saveDesignProject: (content: string, filePath?: string) => Promise<{
     canceled: boolean
     filePath?: string
   }>

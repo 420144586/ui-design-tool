@@ -8,8 +8,8 @@ const api = {
   exportGeneratedVueFile: (content: string) =>
     electronAPI.ipcRenderer.invoke('export-generated-vue-file', { content }),
   importVueFile: () => electronAPI.ipcRenderer.invoke('import-vue-file'),
-  saveDesignProject: (content: string) =>
-    electronAPI.ipcRenderer.invoke('save-design-project', { content }),
+  saveDesignProject: (content: string, filePath?: string) =>
+    electronAPI.ipcRenderer.invoke('save-design-project', { content, filePath }),
   loadDesignProject: () => electronAPI.ipcRenderer.invoke('load-design-project')
 }
 

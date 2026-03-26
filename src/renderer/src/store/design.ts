@@ -8,6 +8,7 @@ import type {
   ViewMode
 } from '@renderer/types/design'
 import type { DesignProjectFileV1 } from '@renderer/utils/designProjectFile'
+import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const isInside = (
@@ -43,7 +44,7 @@ const cloneElementsPlain = (elements: DesignElement[]): DesignElement[] =>
 
 export interface DesignHistorySnapshot {
   elements: DesignElement[]
-  selectedElementId: string
+  selectedElementIds: string[]
   nextSerial: number
 }
 
@@ -53,7 +54,7 @@ export const useDesignStore = defineStore('design', {
     canvas: { ...defaultCanvas },
     elements: [] as DesignElement[],
     nextSerial: 1,
-    selectedElementId: '' as string,
+    selectedElementIds: [] as string[],
     dragPreview: { ...defaultPreview },
     activePreset: null as ElementPreset | null,
     /** 撤销栈：每条为「该步操作之前」的完整设计快照 */
@@ -64,16 +65,28 @@ export const useDesignStore = defineStore('design', {
     layoutDragHistorySaved: false
   }),
   getters: {
+    /** 与单选兼容：取最后一次点击（多选时为主编辑项） */
+    selectedElementId: (state): string => state.selectedElementIds.at(-1) ?? '',
     selectedElement: (state): DesignElement | undefined =>
-      state.elements.find((item) => item.id === state.selectedElementId),
-    canUndoDesign: (state): boolean => state.designHistoryPast.length > 0
+      state.elements.find((item) => item.id === (state.selectedElementIds.at(-1) ?? '')),
+    /** 当前选中项是否有可切换到的父节点（数据中存在且 id 有效） */
+    canSelectParent: (state): boolean => {
+      const sid = state.selectedElementIds.at(-1) ?? ''
+      if (!sid) return false
+      const el = state.elements.find((item) => item.id === sid)
+      const pid = el?.parentId
+      if (pid == null || pid === '') return false
+      return state.elements.some((item) => item.id === pid)
+    },
+    canUndoDesign: (state): boolean => state.designHistoryPast.length > 0,
+    hasSelection: (state): boolean => state.selectedElementIds.length > 0
   },
   actions: {
     pushDesignHistory(): void {
       if (this.historyMuted) return
       const snap: DesignHistorySnapshot = {
         elements: cloneElementsPlain(this.elements),
-        selectedElementId: this.selectedElementId,
+        selectedElementIds: [...this.selectedElementIds],
         nextSerial: this.nextSerial
       }
       this.designHistoryPast.push(snap)
@@ -96,7 +109,7 @@ export const useDesignStore = defineStore('design', {
       if (!snap) return
       this.historyMuted = true
       this.elements = cloneElementsPlain(snap.elements)
-      this.selectedElementId = snap.selectedElementId
+      this.selectedElementIds = snap.selectedElementIds ? [...snap.selectedElementIds] : []
       this.nextSerial = snap.nextSerial
       this.historyMuted = false
     },
@@ -208,14 +221,14 @@ export const useDesignStore = defineStore('design', {
       }
       this.elements.push(nextElement)
       if (options?.select !== false) {
-        this.selectedElementId = nextElement.id
+        this.selectedElementIds = [nextElement.id]
       }
       return nextElement
     },
     replaceElements(elements: DesignElement[]): void {
       this.pushDesignHistory()
       this.elements = elements
-      this.selectedElementId = ''
+      this.selectedElementIds = []
       const maxSerial = elements.reduce((max, item) => Math.max(max, item.serial), 0)
       this.nextSerial = maxSerial + 1
     },
@@ -238,26 +251,37 @@ export const useDesignStore = defineStore('design', {
         layoutMode: c.layoutMode === 'absolute' ? 'absolute' : 'grid',
         zoom: Math.min(2, Math.max(0.25, Number(c.zoom) || 1))
       }
-      this.selectedElementId = ''
+      this.selectedElementIds = []
       this.activePreset = null
       this.activeView = 'design'
       this.dragPreview = { ...defaultPreview }
       this.historyMuted = false
     },
-    updateElement(id: string, payload: Partial<DesignElement>): void {
+    updateElement(
+      id: string,
+      payload: Partial<DesignElement>,
+      options?: { skipHistory?: boolean }
+    ): void {
       const target = this.elements.find((item) => item.id === id)
       if (!target) return
-      if (this.layoutDragActive && (payload.x !== undefined || payload.y !== undefined)) {
-        if (!this.layoutDragHistorySaved) {
+      const skipHistory = options?.skipHistory === true
+      if (!skipHistory) {
+        if (this.layoutDragActive && (payload.x !== undefined || payload.y !== undefined)) {
+          if (!this.layoutDragHistorySaved) {
+            this.pushDesignHistory()
+            this.layoutDragHistorySaved = true
+          }
+        } else if (!this.layoutDragActive) {
           this.pushDesignHistory()
-          this.layoutDragHistorySaved = true
         }
-      } else if (!this.layoutDragActive) {
-        this.pushDesignHistory()
       }
       const oldX = target.x
       const oldY = target.y
       Object.assign(target, payload)
+      if (this.layoutDragActive && (payload.x !== undefined || payload.y !== undefined)) {
+        target.layoutCenterHorizontal = false
+        target.layoutCenterVertical = false
+      }
       if (payload.x !== undefined || payload.y !== undefined) {
         const dx = target.x - oldX
         const dy = target.y - oldY
@@ -302,6 +326,11 @@ export const useDesignStore = defineStore('design', {
           }
         }
       }
+      if (target.kind === 'column') {
+        if (payload.width !== undefined || payload.height !== undefined) {
+          this.syncColumnChildrenLayout(target.id)
+        }
+      }
     },
     shiftDescendants(rootId: string, dx: number, dy: number): void {
       this.elements
@@ -334,7 +363,41 @@ export const useDesignStore = defineStore('design', {
       if (parent.kind === 'table') return
       this.pushDesignHistory()
       child.parentId = newParentId
-      this.selectedElementId = childId
+      this.selectedElementIds = [childId]
+    },
+    /**
+     * 批量挂到同一父级（一步撤销，用于多选拖入容器）。
+     */
+    reparentElements(childIds: string[], newParentId: string): void {
+      const parent = this.elements.find((item) => item.id === newParentId)
+      if (!parent || parent.kind === 'table') return
+      const dragged = new Set(childIds)
+      const toReparent: string[] = []
+      for (const cid of childIds) {
+        if (cid === newParentId) continue
+        const child = this.elements.find((item) => item.id === cid)
+        if (!child) continue
+        if (child.parentId === newParentId) continue
+        if (dragged.has(newParentId)) continue
+        if (this.isDescendantOf(cid, newParentId)) continue
+        toReparent.push(cid)
+      }
+      if (toReparent.length === 0) return
+      this.pushDesignHistory()
+      for (const cid of toReparent) {
+        const c = this.elements.find((item) => item.id === cid)
+        if (c) c.parentId = newParentId
+      }
+      this.selectedElementIds = [...toReparent]
+    },
+    /** 多选：在「选中集合」内的顶层节点（父子同时选中时只移动根） */
+    selectionRoots(ids: string[]): string[] {
+      const set = new Set(ids)
+      return ids.filter((id) => {
+        const el = this.elements.find((e) => e.id === id)
+        if (!el?.parentId) return true
+        return !set.has(el.parentId)
+      })
     },
     syncTableCellsLayout(tableId: string): void {
       const t = this.elements.find((item) => item.id === tableId)
@@ -404,7 +467,7 @@ export const useDesignStore = defineStore('design', {
         .forEach((cell) => walk(cell.id))
       this.elements = this.elements.filter((item) => !toDrop.has(item.id))
       this.initTableCells(tableId)
-      this.selectedElementId = tableId
+      this.selectedElementIds = [tableId]
     },
     setImageHasLabelForSelectedStyle(id: string, hasLabel: boolean): void {
       const el = this.elements.find((item) => item.id === id)
@@ -436,7 +499,7 @@ export const useDesignStore = defineStore('design', {
           { parentId: pid, select: false, skipHistory: true }
         )
         this.rebuildImageChildren(container.id)
-        this.selectedElementId = container.id
+        this.selectedElementIds = [container.id]
         return
       }
 
@@ -464,53 +527,124 @@ export const useDesignStore = defineStore('design', {
           },
           { parentId: pid, select: false, skipHistory: true }
         )
-        this.selectedElementId = img.id
+        this.selectedElementIds = [img.id]
         return
       }
 
       Object.assign(el, { hasLabel: true, width: 130, height: 50, gap: el.gap ?? 10 })
       this.rebuildImageChildren(el.id)
-      this.selectedElementId = el.id
+      this.selectedElementIds = [el.id]
     },
     selectElement(id: string): void {
-      this.selectedElementId = id
+      this.selectedElementIds = [id]
+    },
+    /** Ctrl/Cmd 多选：已选则取消，未选则加入 */
+    toggleSelectElement(id: string): void {
+      const list = this.selectedElementIds
+      const i = list.indexOf(id)
+      if (i >= 0) {
+        list.splice(i, 1)
+      } else {
+        list.push(id)
+      }
+    },
+    /** 选中当前元素的父级（与 selectedElement getter 解耦，始终从 elements 解析） */
+    selectParentOfSelected(): void {
+      const sid = this.selectedElementIds.at(-1) ?? ''
+      if (!sid) return
+      const el = this.elements.find((item) => item.id === sid)
+      const pid = el?.parentId
+      if (pid == null || pid === '') return
+      if (!this.elements.some((item) => item.id === pid)) return
+      this.selectedElementIds = [pid]
     },
     clearSelection(): void {
-      this.selectedElementId = ''
+      this.selectedElementIds = []
     },
     deleteSelectedElement(): void {
-      if (!this.selectedElementId) return
+      if (this.selectedElementIds.length === 0) return
       this.pushDesignHistory()
+      const sel = new Set(this.selectedElementIds)
+      const roots = this.selectedElementIds.filter((id) => {
+        const el = this.elements.find((e) => e.id === id)
+        if (!el) return false
+        if (!el.parentId) return true
+        return !sel.has(el.parentId)
+      })
       const toDrop = new Set<string>()
       const walk = (id: string): void => {
         toDrop.add(id)
         this.elements.filter((item) => item.parentId === id).forEach((ch) => walk(ch.id))
       }
-      walk(this.selectedElementId)
+      roots.forEach((id) => walk(id))
       this.elements = this.elements.filter((item) => !toDrop.has(item.id))
-      this.selectedElementId = ''
+      this.selectedElementIds = []
     },
     duplicateSelectedElement(): void {
-      const selected = this.selectedElement
-      if (!selected) return
-      const { id, serial, parentId, ...rest } = selected
-      void id
-      void serial
+      const sel = new Set(this.selectedElementIds)
+      const roots = this.selectedElementIds.filter((id) => {
+        const el = this.elements.find((e) => e.id === id)
+        if (!el) return false
+        if (!el.parentId) return true
+        return !sel.has(el.parentId)
+      })
+      if (roots.length === 0) return
+      const g = this.canvas.gridSize
       this.pushDesignHistory()
-      this.addElement(
-        {
-          ...rest,
-          x: rest.x + this.canvas.gridSize,
-          y: rest.y + this.canvas.gridSize
-        },
-        { parentId: parentId ?? null, skipHistory: true }
-      )
+      const newIds: string[] = []
+      for (const rid of roots) {
+        const selected = this.elements.find((e) => e.id === rid)
+        if (!selected) continue
+        const { id, serial, parentId, ...rest } = selected
+        void id
+        void serial
+        const added = this.addElement(
+          {
+            ...rest,
+            x: rest.x + g,
+            y: rest.y + g
+          },
+          { parentId: parentId ?? null, skipHistory: true, select: false }
+        )
+        newIds.push(added.id)
+      }
+      this.selectedElementIds = newIds
     },
-    updateColumnChildCount(containerId: string, nextCount: number): void {
+    /** 按当前 Column 高度与子元素数量，均分高度并重排子块（不改子元素数量时用于宽高变化后同步） */
+    syncColumnChildrenLayout(containerId: string): void {
+      const container = this.elements.find((item) => item.id === containerId)
+      if (!container || container.kind !== 'column') return
+      const children = this.elements
+        .filter((item) => item.parentId === containerId)
+        .sort((a, b) => a.y - b.y || a.x - b.x)
+      const count = Math.max(1, container.childCount ?? 1)
+      if (children.length !== count) {
+        this.updateColumnChildCount(containerId, count, { skipHistory: true })
+        return
+      }
+      const heights = computeColumnChildHeights(container.height, count)
+      let yOffset = 0
+      children.forEach((child, i) => {
+        const childH = heights[i] ?? 0
+        if (childH <= 0) return
+        child.x = container.x
+        child.y = container.y + yOffset
+        child.width = container.width
+        child.height = childH
+        yOffset += childH
+      })
+    },
+    updateColumnChildCount(
+      containerId: string,
+      nextCount: number,
+      options?: { skipHistory?: boolean }
+    ): void {
       const container = this.elements.find((item) => item.id === containerId)
       if (!container) return
       if (container.kind !== 'column') return
-      this.pushDesignHistory()
+      if (!options?.skipHistory) {
+        this.pushDesignHistory()
+      }
 
       const raw = Math.floor(Number(nextCount))
       const count = Number.isFinite(raw) ? Math.max(1, raw) : 1
@@ -519,13 +653,11 @@ export const useDesignStore = defineStore('design', {
       // remove existing children, keep container
       this.elements = this.elements.filter((item) => item.id === containerId || item.parentId !== containerId)
 
-      const grid = this.canvas.gridSize
       const containerH = container.height
-      const childBaseH = Math.max(grid, Math.floor(containerH / count / grid) * grid)
-
+      const heights = computeColumnChildHeights(containerH, count)
+      let yOffset = 0
       for (let i = 0; i < count; i += 1) {
-        const isLast = i === count - 1
-        const childH = isLast ? containerH - childBaseH * (count - 1) : childBaseH
+        const childH = heights[i] ?? 0
         if (childH <= 0) continue
         this.addElement(
           {
@@ -533,7 +665,7 @@ export const useDesignStore = defineStore('design', {
             type: 'div',
             name: `ColumnChild-${container.serial}-${i + 1}`,
             x: container.x,
-            y: container.y + i * childBaseH,
+            y: container.y + yOffset,
             width: container.width,
             height: childH,
             background: container.background,
@@ -542,10 +674,11 @@ export const useDesignStore = defineStore('design', {
           },
           { select: false, parentId: containerId, skipHistory: true }
         )
+        yOffset += childH
       }
 
       // keep container selected
-      this.selectedElementId = containerId
+      this.selectedElementIds = [containerId]
     },
     rebuildImageChildren(containerId: string): void {
       const c = this.elements.find((item) => item.id === containerId)
@@ -606,7 +739,7 @@ export const useDesignStore = defineStore('design', {
         )
       }
 
-      this.selectedElementId = containerId
+      this.selectedElementIds = [containerId]
     },
     snap(value: number): number {
       return Math.max(0, Math.round(value / this.canvas.gridSize) * this.canvas.gridSize)

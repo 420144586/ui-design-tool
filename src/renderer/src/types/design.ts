@@ -22,6 +22,8 @@ export interface DesignElement {
   width: number
   height: number
   background: string
+  /** 为 true 时背景填充为 transparent，保留 background / 渐变数据便于取消勾选后恢复 */
+  backgroundTransparent?: boolean
   text: string
   opacity: number
   childCount?: number
@@ -44,6 +46,37 @@ export interface DesignElement {
   componentKey?: string
   /** 追加到封装组件根节点上的 class，用于覆盖组件默认样式（空格分隔） */
   componentClass?: string
+  /** 是否使用渐变背景 */
+  isGradient?: boolean
+  /** 渐变类型 */
+  gradientType?: 'linear' | 'radial'
+  /** 线性渐变角度 */
+  gradientAngle?: number
+  /** 渐变颜色列表 */
+  gradientColors?: string[]
+  /** 文本颜色 */
+  color?: string
+  /** 字体大小 */
+  fontSize?: number
+  /** 字体粗细 */
+  fontWeight?: string
+  /** 文本对齐 */
+  textAlign?: 'left' | 'center' | 'right'
+  /** 圆角 */
+  borderRadius?: number
+  /** 边框宽度 */
+  borderWidth?: number
+  /** 边框样式 */
+  borderStyle?: 'none' | 'solid' | 'dashed' | 'dotted'
+  /** 是否显示上边边框（false 为不显示；未设置时默认四边均显示） */
+  borderTop?: boolean
+  borderRight?: boolean
+  borderBottom?: boolean
+  borderLeft?: boolean
+  /** 在父容器内水平居中（absolute：left:50%+translateX；grid：justify-self） */
+  layoutCenterHorizontal?: boolean
+  /** 在父容器内垂直居中（absolute：top:50%+translateY；grid：align-self） */
+  layoutCenterVertical?: boolean
 }
 
 export type PresetKind = 'div' | 'column' | 'image' | 'table' | 'dcomponent'

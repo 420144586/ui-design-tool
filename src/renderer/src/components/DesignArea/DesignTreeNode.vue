@@ -2,20 +2,24 @@
 import { computed } from 'vue'
 import type { DesignElement, LayoutMode } from '@renderer/types/design'
 import DButton from '@renderer/D-components/DButton.vue'
+import { cssBackgroundFill } from '@renderer/utils/elementBackground'
+import { applyBoxBorderToStyle } from '@renderer/utils/elementBorder'
+import { applyLayoutCenterToInlineStyle, gridPlacementForElement } from '@renderer/utils/layoutCenter'
 
 defineOptions({ name: 'DesignTreeNode' })
 
 const props = defineProps<{
   element: DesignElement
   elements: DesignElement[]
-  selectedElementId: string
+  selectedElementIds: string[]
   layoutMode: LayoutMode
   gridSize: number
   parent?: DesignElement
 }>()
 
 const emit = defineEmits<{
-  select: [id: string]
+  /** 第二项为 click 事件（如表格单元格），便于 Ctrl 多选；仅 mousedown 选中的分支不会触发 */
+  select: [id: string, event?: MouseEvent]
   mousedown: [event: MouseEvent, element: DesignElement]
 }>()
 
@@ -43,8 +47,16 @@ const imgSrc = computed(
 )
 
 const nodeStyle = computed(() => {
+  const commonStyle: Record<string, string> = {}
+  if (props.element.color) commonStyle.color = props.element.color
+  if (props.element.fontSize) commonStyle.fontSize = `${props.element.fontSize}px`
+  if (props.element.fontWeight) commonStyle.fontWeight = props.element.fontWeight
+  if (props.element.textAlign) commonStyle.textAlign = props.element.textAlign
+  if (props.element.borderRadius) commonStyle.borderRadius = `${props.element.borderRadius}px`
+  applyBoxBorderToStyle(commonStyle, props.element)
+
   if (props.parent?.kind === 'image' && props.parent.type === 'div') {
-    const style: Record<string, string> = {}
+    const style: Record<string, string> = { ...commonStyle }
     if (props.element.type === 'img') {
       style.position = 'relative'
       style.width = '30px'
@@ -61,7 +73,7 @@ const nodeStyle = computed(() => {
       style.width = 'auto'
       style.height = '100%'
       style.boxSizing = 'border-box'
-      style.background = props.element.background
+      style.background = cssBackgroundFill(props.element)
       style.opacity = String(props.element.opacity)
       style.display = 'flex'
       style.alignItems = 'center'
@@ -70,20 +82,49 @@ const nodeStyle = computed(() => {
     }
   }
 
-  const style: Record<string, string> = {}
+  /** Column 子项由父级 flex 均分高度（等价于 父高 / n），不参与网格/绝对像素叠放 */
+  if (props.parent?.kind === 'column') {
+    const style: Record<string, string> = { ...commonStyle }
+    const isDComponent = props.element.kind === 'dcomponent'
+    style.position = 'relative'
+    style.left = '0'
+    style.top = '0'
+    style.width = '100%'
+    style.flex = '1 1 0'
+    style.minHeight = '0'
+    style.display = 'flex'
+    style.alignItems = 'center'
+    style.justifyContent = 'center'
+    style.boxSizing = 'border-box'
+    style.height = 'auto'
+    style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
+    style.opacity = String(props.element.opacity)
+    return style
+  }
+
+  const style: Record<string, string> = { ...commonStyle }
   const isDComponent = props.element.kind === 'dcomponent'
   if (props.layoutMode === 'grid') {
-    const col = Math.floor(relativeX.value / props.gridSize) + 1
-    const row = Math.floor(relativeY.value / props.gridSize) + 1
-    const colSpan = Math.max(1, Math.ceil(props.element.width / props.gridSize))
-    const rowSpan = Math.max(1, Math.ceil(props.element.height / props.gridSize))
-    style.gridColumn = `${col} / span ${colSpan}`
-    style.gridRow = `${row} / span ${rowSpan}`
+    const gp = gridPlacementForElement(
+      props.element,
+      relativeX.value,
+      relativeY.value,
+      props.gridSize
+    )
+    style.gridColumn = gp.gridColumn
+    style.gridRow = gp.gridRow
     style.width = `${props.element.width}px`
     style.height = `${props.element.height}px`
-    style.background = isDComponent ? 'transparent' : props.element.background
+    style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
     style.opacity = String(props.element.opacity)
     style.position = 'relative'
+    if (props.element.kind === 'column' && children.value.length > 0) {
+      style.display = 'flex'
+      style.flexDirection = 'column'
+      style.alignItems = 'stretch'
+      style.justifyContent = 'flex-start'
+    }
+    applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
     return style
   }
 
@@ -92,8 +133,15 @@ const nodeStyle = computed(() => {
   style.top = `${relativeY.value}px`
   style.width = `${props.element.width}px`
   style.height = `${props.element.height}px`
-  style.background = isDComponent ? 'transparent' : props.element.background
+  style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
   style.opacity = String(props.element.opacity)
+  if (props.element.kind === 'column' && children.value.length > 0) {
+    style.display = 'flex'
+    style.flexDirection = 'column'
+    style.alignItems = 'stretch'
+    style.justifyContent = 'flex-start'
+  }
+  applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
   return style
 })
 
@@ -130,13 +178,23 @@ const tableCellChildren = (cell: DesignElement): DesignElement[] =>
 
 /** 单元格上默认 stop，否则会拦掉外层表格的 mousedown，表几乎无法拖动；选中整张表时再放开冒泡 */
 const onTableCellSlotMouseDown = (e: MouseEvent): void => {
-  if (props.selectedElementId === props.element.id) return
+  if (props.selectedElementIds.includes(props.element.id)) return
   e.stopPropagation()
 }
 
 const childContainerStyle = computed(() => {
   const style: Record<string, string> = {}
   if (children.value.length === 0) return style
+  if (props.element.kind === 'column') {
+    style.position = 'absolute'
+    style.inset = '0'
+    style.display = 'flex'
+    style.flexDirection = 'column'
+    style.alignItems = 'stretch'
+    style.boxSizing = 'border-box'
+    style.overflow = 'hidden'
+    return style
+  }
   if (props.element.kind === 'image' && props.element.type === 'div') {
     style.position = 'absolute'
     style.inset = '0'
@@ -151,6 +209,7 @@ const childContainerStyle = computed(() => {
     style.position = 'absolute'
     style.inset = '0'
     style.display = 'grid'
+    style.placeItems = 'center'
     style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(props.element.width / props.gridSize))}, ${props.gridSize}px)`
     style.gridTemplateRows = `repeat(${Math.max(1, Math.floor(props.element.height / props.gridSize))}, ${props.gridSize}px)`
     return style
@@ -166,10 +225,9 @@ const childContainerStyle = computed(() => {
     v-if="element.type === 'img'"
     class="designer-element designer-element--img"
     :data-element-id="element.id"
-    :class="{ active: selectedElementId === element.id }"
+    :class="{ active: selectedElementIds.includes(element.id) }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click.stop="emit('select', element.id)"
   >
     <img class="designer-img" :src="imgSrc" alt="" draggable="false" />
   </div>
@@ -177,10 +235,9 @@ const childContainerStyle = computed(() => {
     v-else-if="element.kind === 'table'"
     class="designer-element designer-element--table"
     :data-element-id="element.id"
-    :class="{ active: selectedElementId === element.id }"
+    :class="{ active: selectedElementIds.includes(element.id) }"
     :style="{ ...nodeStyle, ...tableStyle }"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click.stop="emit('select', element.id)"
   >
     <table class="designer-table">
       <tr v-for="ri in tableRows" :key="'tr-' + ri">
@@ -190,18 +247,18 @@ const childContainerStyle = computed(() => {
             class="designer-td-slot"
             :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
             @mousedown="onTableCellSlotMouseDown"
-            @click.self="emit('select', tableCellAt(ri - 1, ci - 1)!.id)"
+            @click.self="(e) => emit('select', tableCellAt(ri - 1, ci - 1)!.id, e)"
           >
             <DesignTreeNode
               v-for="sub in tableCellChildren(tableCellAt(ri - 1, ci - 1)!)"
               :key="sub.id"
               :element="sub"
               :elements="elements"
-              :selected-element-id="selectedElementId"
+              :selected-element-ids="selectedElementIds"
               :layout-mode="layoutMode"
               :grid-size="gridSize"
               :parent="tableCellAt(ri - 1, ci - 1)"
-              @select="emit('select', $event)"
+              @select="(id, ev) => emit('select', id, ev)"
               @mousedown="(event, node) => emit('mousedown', event, node)"
             />
           </div>
@@ -213,26 +270,24 @@ const childContainerStyle = computed(() => {
     v-else-if="element.kind === 'dcomponent'"
     class="designer-element designer-element--dcomponent"
     :data-element-id="element.id"
-    :class="{ active: selectedElementId === element.id }"
+    :class="{ active: selectedElementIds.includes(element.id) }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click.stop="emit('select', element.id)"
   >
     <DButton
       v-if="element.componentKey === 'DButton'"
       class="dcomponent-root"
       :class="[element.id, element.componentClass?.trim()].filter(Boolean)"
-      :surface-background="element.background"
+      :surface-background="cssBackgroundFill(element)"
     />
   </div>
   <div
     v-else
     class="designer-element"
     :data-element-id="element.id"
-    :class="{ active: selectedElementId === element.id }"
+    :class="{ active: selectedElementIds.includes(element.id) }"
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
-    @click.stop="emit('select', element.id)"
   >
     <span v-if="labelText" class="element-label">{{ labelText }}</span>
 
@@ -242,11 +297,11 @@ const childContainerStyle = computed(() => {
         :key="child.id"
         :element="child"
         :elements="elements"
-        :selected-element-id="selectedElementId"
+        :selected-element-ids="selectedElementIds"
         :layout-mode="layoutMode"
         :grid-size="gridSize"
         :parent="element"
-        @select="emit('select', $event)"
+        @select="(id, ev) => emit('select', id, ev)"
         @mousedown="(event, node) => emit('mousedown', event, node)"
       />
     </div>
@@ -255,7 +310,8 @@ const childContainerStyle = computed(() => {
 
 <style scoped>
 .designer-element {
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  outline: 1px solid rgba(255, 255, 255, 0.3);
+  outline-offset: -1px;
   color: #f1f4fb;
   font-size: 12px;
   display: flex;
@@ -263,10 +319,24 @@ const childContainerStyle = computed(() => {
   justify-content: center;
   cursor: pointer;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
+/* 选中框用 ::after 画在盒内，避免 outline 被 overflow:hidden 裁掉（与元素自身边框样式无关） */
 .designer-element.active {
-  outline: 2px solid #58a6ff;
+  outline: none;
+  z-index: 100;
+}
+
+.designer-element.active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px dashed #7dd3fc;
+  border-radius: inherit;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 200;
 }
 
 .element-label {

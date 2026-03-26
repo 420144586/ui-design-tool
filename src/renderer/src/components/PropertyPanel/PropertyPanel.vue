@@ -45,12 +45,147 @@ const setImageHasLabel = (checked: boolean): void => {
   if (!s || s.kind !== 'image') return
   store.setImageHasLabelForSelectedStyle(s.id, checked)
 }
+
+const generateGradientString = (type: string, colors: string[], angle: number = 90): string => {
+  if (type === 'linear') {
+    return `linear-gradient(${angle}deg, ${colors.join(', ')})`
+  } else {
+    return `radial-gradient(circle, ${colors.join(', ')})`
+  }
+}
+
+const isGradient = computed({
+  get: () => !!selected.value?.isGradient,
+  set: (val: boolean) => {
+    if (!selected.value) return
+    if (val) {
+      const type = selected.value.gradientType || 'linear'
+      const angle = selected.value.gradientAngle ?? 90
+      const colors = selected.value.gradientColors?.length ? selected.value.gradientColors : ['#ff0000', '#0000ff']
+      store.updateElement(selected.value.id, {
+        isGradient: true,
+        backgroundTransparent: false,
+        gradientType: type,
+        gradientAngle: angle,
+        gradientColors: colors,
+        background: generateGradientString(type, colors, angle)
+      })
+    } else {
+      store.updateElement(selected.value.id, {
+        isGradient: false,
+        backgroundTransparent: false,
+        background: selected.value.gradientColors?.[0] || '#ffffff'
+      })
+    }
+  }
+})
+
+const isBackgroundTransparent = computed({
+  get: () => !!selected.value?.backgroundTransparent,
+  set: (val: boolean) => {
+    if (!selected.value) return
+    store.updateElement(selected.value.id, { backgroundTransparent: val })
+  }
+})
+
+const gradientType = computed({
+  get: () => selected.value?.gradientType || 'linear',
+  set: (val: 'linear' | 'radial') => {
+    if (!selected.value) return
+    const colors = selected.value.gradientColors || ['#ff0000', '#0000ff']
+    const angle = selected.value.gradientAngle ?? 90
+    store.updateElement(selected.value.id, {
+      backgroundTransparent: false,
+      gradientType: val,
+      background: generateGradientString(val, colors, angle)
+    })
+  }
+})
+
+const gradientAngle = computed({
+  get: () => selected.value?.gradientAngle ?? 90,
+  set: (val: number) => {
+    if (!selected.value) return
+    const colors = selected.value.gradientColors || ['#ff0000', '#0000ff']
+    const type = selected.value.gradientType || 'linear'
+    store.updateElement(selected.value.id, {
+      backgroundTransparent: false,
+      gradientAngle: val,
+      background: generateGradientString(type, colors, val)
+    })
+  }
+})
+
+const gradientColors = computed(() => selected.value?.gradientColors || ['#ff0000', '#0000ff'])
+
+const updateGradientColor = (index: number, color: string): void => {
+  if (!selected.value) return
+  const colors = [...gradientColors.value]
+  colors[index] = color
+  const angle = selected.value.gradientAngle ?? 90
+  store.updateElement(selected.value.id, {
+    backgroundTransparent: false,
+    gradientColors: colors,
+    background: generateGradientString(gradientType.value, colors, angle)
+  })
+}
+
+const addGradientColor = (): void => {
+  if (!selected.value) return
+  const colors = [...gradientColors.value, '#ffffff']
+  const angle = selected.value.gradientAngle ?? 90
+  store.updateElement(selected.value.id, {
+    backgroundTransparent: false,
+    gradientColors: colors,
+    background: generateGradientString(gradientType.value, colors, angle)
+  })
+}
+
+const removeGradientColor = (index: number): void => {
+  if (!selected.value) return
+  const colors = [...gradientColors.value]
+  if (colors.length <= 2) return
+  colors.splice(index, 1)
+  const angle = selected.value.gradientAngle ?? 90
+  store.updateElement(selected.value.id, {
+    backgroundTransparent: false,
+    gradientColors: colors,
+    background: generateGradientString(gradientType.value, colors, angle)
+  })
+}
+
+const setSolidBackground = (value: string): void => {
+  if (!selected.value) return
+  store.updateElement(selected.value.id, {
+    backgroundTransparent: false,
+    background: value
+  })
+}
+
+type BorderSideKey = 'borderTop' | 'borderRight' | 'borderBottom' | 'borderLeft'
+
+const borderSideChecked = (key: BorderSideKey): boolean => {
+  const el = selected.value
+  if (!el) return true
+  return el[key] !== false
+}
+
+const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
+  if (!selected.value) return
+  store.updateElement(selected.value.id, { [key]: checked } as Partial<DesignElement>)
+}
 </script>
 
 <template>
   <section class="panel">
     <h3>属性面板</h3>
-    <template v-if="selected">
+    <div v-if="store.selectedElementIds.length > 1" class="multi-hint">
+      <p>已选中 <strong>{{ store.selectedElementIds.length }}</strong> 个元素。</p>
+      <p class="hint-sub">
+        可一齐拖动；拖入另一元素时可批量设为子元素。属性编辑请先单选一项（Ctrl/⌘ 再点已选项可取消选择）。
+      </p>
+    </div>
+    <template v-else-if="selected">
       <label v-if="!isDComponent">
         文本
         <input
@@ -58,46 +193,278 @@ const setImageHasLabel = (checked: boolean): void => {
           @input="update('text', ($event.target as HTMLInputElement).value)"
         />
       </label>
-      <label>
-        X
-        <input
-          type="number"
-          :value="selected.x"
-          @input="update('x', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
-      <label>
-        Y
-        <input
-          type="number"
-          :value="selected.y"
-          @input="update('y', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
-      <label>
-        宽度
-        <input
-          type="number"
-          :value="selected.width"
-          @input="update('width', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
-      <label>
-        高度
-        <input
-          type="number"
-          :value="selected.height"
-          @input="update('height', Number(($event.target as HTMLInputElement).value))"
-        />
-      </label>
-      <label>
-        背景色
-        <input
-          :value="selected.background"
-          @input="update('background', ($event.target as HTMLInputElement).value)"
-        />
-      </label>
-      <label v-if="isColumnContainer">
+      <div class="style-group">
+        <div class="group-title">排版与尺寸</div>
+        <div class="row-inputs">
+          <label class="half">
+            X
+            <input
+              type="number"
+              :value="selected.x"
+              @input="update('x', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="half">
+            Y
+            <input
+              type="number"
+              :value="selected.y"
+              @input="update('y', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+        </div>
+        <div class="row-inputs">
+          <label class="half">
+            宽度
+            <input
+              type="number"
+              :value="selected.width"
+              @input="update('width', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="half">
+            高度
+            <input
+              type="number"
+              :value="selected.height"
+              @input="update('height', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div class="style-group" v-if="!isDComponent && !isImageStandalone">
+        <div class="group-title">文本样式</div>
+        <div class="row-inputs">
+          <label class="half">
+            字体大小
+            <input
+              type="number"
+              :value="selected.fontSize ?? 12"
+              @input="update('fontSize', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="half">
+            字体颜色
+            <div class="color-row">
+              <input
+                type="color"
+                :value="selected.color ?? '#f1f4fb'"
+                @input="update('color', ($event.target as HTMLInputElement).value)"
+                class="color-picker"
+              />
+              <input
+                type="text"
+                :value="selected.color ?? '#f1f4fb'"
+                @input="update('color', ($event.target as HTMLInputElement).value)"
+                class="color-input"
+              />
+            </div>
+          </label>
+        </div>
+        <div class="row-inputs">
+          <label class="half">
+            字体粗细
+            <select
+              :value="selected.fontWeight ?? 'normal'"
+              @change="update('fontWeight', ($event.target as HTMLSelectElement).value)"
+              class="common-select"
+            >
+              <option value="normal">Normal</option>
+              <option value="bold">Bold</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+              <option value="300">300</option>
+              <option value="400">400</option>
+              <option value="500">500</option>
+              <option value="600">600</option>
+              <option value="700">700</option>
+              <option value="800">800</option>
+              <option value="900">900</option>
+            </select>
+          </label>
+          <label class="half">
+            对齐方式
+            <select
+              :value="selected.textAlign ?? 'center'"
+              @change="update('textAlign', ($event.target as HTMLSelectElement).value as any)"
+              class="common-select"
+            >
+              <option value="left">左对齐</option>
+              <option value="center">居中</option>
+              <option value="right">右对齐</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="style-group">
+        <div class="group-title">外观</div>
+        <label>
+          透明度 (0-1)
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            max="1"
+            :value="selected.opacity ?? 1"
+            @input="update('opacity', Number(($event.target as HTMLInputElement).value))"
+          />
+        </label>
+        <label>
+          圆角 (px)
+          <input
+            type="number"
+            :value="selected.borderRadius ?? 0"
+            @input="update('borderRadius', Number(($event.target as HTMLInputElement).value))"
+          />
+        </label>
+        
+        <label>
+          边框样式
+          <select
+            :value="selected.borderStyle ?? 'none'"
+            @change="update('borderStyle', ($event.target as HTMLSelectElement).value as any)"
+            class="common-select"
+          >
+            <option value="none">无边框</option>
+            <option value="solid">实线 (solid)</option>
+            <option value="dashed">虚线 (dashed)</option>
+            <option value="dotted">点线 (dotted)</option>
+          </select>
+        </label>
+        <div class="row-inputs" v-if="selected.borderStyle && selected.borderStyle !== 'none'">
+          <label class="half">
+            边框宽度
+            <input
+              type="number"
+              :value="selected.borderWidth ?? 1"
+              @input="update('borderWidth', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="half">
+            边框颜色
+            <div class="color-row">
+              <input
+                type="color"
+                :value="selected.borderColor ?? '#000000'"
+                @input="update('borderColor', ($event.target as HTMLInputElement).value)"
+                class="color-picker"
+              />
+              <input
+                type="text"
+                :value="selected.borderColor ?? '#000000'"
+                @input="update('borderColor', ($event.target as HTMLInputElement).value)"
+                class="color-input"
+              />
+            </div>
+          </label>
+        </div>
+        <div class="border-sides" v-if="selected.borderStyle && selected.borderStyle !== 'none'">
+          <span class="border-sides-title">显示边</span>
+          <label class="check inline-check">
+            <input
+              type="checkbox"
+              :checked="borderSideChecked('borderTop')"
+              @change="setBorderSide('borderTop', ($event.target as HTMLInputElement).checked)"
+            />
+            上
+          </label>
+          <label class="check inline-check">
+            <input
+              type="checkbox"
+              :checked="borderSideChecked('borderRight')"
+              @change="setBorderSide('borderRight', ($event.target as HTMLInputElement).checked)"
+            />
+            右
+          </label>
+          <label class="check inline-check">
+            <input
+              type="checkbox"
+              :checked="borderSideChecked('borderBottom')"
+              @change="setBorderSide('borderBottom', ($event.target as HTMLInputElement).checked)"
+            />
+            下
+          </label>
+          <label class="check inline-check">
+            <input
+              type="checkbox"
+              :checked="borderSideChecked('borderLeft')"
+              @change="setBorderSide('borderLeft', ($event.target as HTMLInputElement).checked)"
+            />
+            左
+          </label>
+        </div>
+      </div>
+
+      <div class="style-group">
+        <div class="group-title">背景</div>
+        <label>
+          背景色
+        </label>
+        <div class="bg-color-header">
+          <label class="check inline-check">
+            <input type="checkbox" v-model="isGradient" />
+            渐变
+          </label>
+          <label class="check inline-check">
+            <input type="checkbox" v-model="isBackgroundTransparent" />
+            透明
+          </label>
+        </div>
+        <template v-if="isGradient">
+          <select v-model="gradientType" class="gradient-type-select">
+            <option value="linear">线性渐变</option>
+            <option value="radial">径向渐变</option>
+          </select>
+          <label v-if="gradientType === 'linear'" class="angle-label">
+            角度 (deg)
+            <input
+              type="number"
+              v-model.number="gradientAngle"
+              class="angle-input"
+            />
+          </label>
+          <div class="gradient-colors">
+            <div v-for="(color, index) in gradientColors" :key="index" class="gradient-color-item">
+              <input
+                type="color"
+                :value="color"
+                @input="updateGradientColor(index, ($event.target as HTMLInputElement).value)"
+                class="color-picker"
+              />
+              <input
+                type="text"
+                :value="color"
+                @input="updateGradientColor(index, ($event.target as HTMLInputElement).value)"
+                class="color-input"
+              />
+              <button
+                v-if="gradientColors.length > 2"
+                type="button"
+                class="icon-btn"
+                @click="removeGradientColor(index)"
+                title="移除颜色"
+              >
+                -
+              </button>
+            </div>
+            <button type="button" class="add-color-btn" @click="addGradientColor">
+              + 添加颜色
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <input
+            :value="selected.background"
+            @input="setSolidBackground(($event.target as HTMLInputElement).value)"
+          />
+        </template>
+      </div>
+
+      <div class="style-group" v-if="isColumnContainer || isImageStandalone || isTable || isDComponent || isImageContainer">
+        <div class="group-title">组件特有属性</div>
+        <label v-if="isColumnContainer">
         子元素数量
         <input
           type="number"
@@ -197,8 +564,9 @@ const setImageHasLabel = (checked: boolean): void => {
           />
         </label>
       </template>
+      </div>
     </template>
-    <p v-else class="empty">请选择一个元素后编辑属性</p>
+    <p v-else class="empty">请选择一个元素后编辑属性（按住 Ctrl 或 ⌘ 可多选）</p>
   </section>
 </template>
 
@@ -209,6 +577,74 @@ const setImageHasLabel = (checked: boolean): void => {
   border-left: 1px solid #2a2f3a;
   background: #161a22;
   overflow: auto;
+}
+
+.multi-hint {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c8d0df;
+  background: #1e2430;
+  border-radius: 8px;
+  border: 1px solid #2f3d52;
+}
+
+.multi-hint .hint-sub {
+  margin: 8px 0 0;
+  color: #8b96ac;
+  font-size: 11px;
+}
+
+.style-group {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #2a2f3a;
+}
+
+.style-group:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c8d0df;
+  margin-bottom: 12px;
+  padding-left: 4px;
+  border-left: 3px solid #4f7cff;
+}
+
+.row-inputs {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.half {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.common-select {
+  margin-top: 4px;
+  width: 100%;
+  background: #0f141c;
+  color: #d7deec;
+  border: 1px solid #2f3748;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 h3 {
@@ -256,5 +692,136 @@ input {
   font-size: 11px;
   color: #6b7589;
   line-height: 1.4;
+}
+
+.bg-color-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.inline-check {
+  display: inline-flex;
+  font-size: 12px;
+  color: #a5b2ca;
+}
+
+.border-sides {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2f3a;
+}
+
+.border-sides-title {
+  width: 100%;
+  font-size: 11px;
+  color: #8b96ac;
+  margin-bottom: -4px;
+}
+
+.gradient-type-select {
+  width: 100%;
+  background: #0f141c;
+  color: #d7deec;
+  border: 1px solid #2f3748;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.angle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #a5b2ca;
+}
+
+.angle-input {
+  flex: 1;
+  margin-top: 0 !important;
+}
+
+.gradient-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gradient-color-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-picker {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #2f3748;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-picker::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+.color-input {
+  flex: 1;
+  margin-top: 0 !important;
+}
+
+.icon-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a2230;
+  border: 1px solid #30384a;
+  border-radius: 4px;
+  color: #d2dbee;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: #2a3548;
+  border-color: #4a5570;
+}
+
+.add-color-btn {
+  margin-top: 4px;
+  background: #1a2230;
+  border: 1px dashed #30384a;
+  border-radius: 6px;
+  color: #a5b2ca;
+  padding: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-color-btn:hover {
+  background: #2a3548;
+  border-color: #4f7cff;
+  color: #d7deec;
 }
 </style>
