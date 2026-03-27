@@ -7,6 +7,12 @@ const api = {
     electronAPI.ipcRenderer.invoke('export-vue-file', { content, defaultFileName }),
   exportGeneratedVueFile: (content: string) =>
     electronAPI.ipcRenderer.invoke('export-generated-vue-file', { content }),
+  readGeneratedPreview: () => electronAPI.ipcRenderer.invoke('read-generated-preview'),
+  getPreviewDir: () =>
+    electronAPI.ipcRenderer.invoke('get-preview-dir') as Promise<{
+      userDataPath: string
+      previewDir: string
+    }>,
   importVueFile: () => electronAPI.ipcRenderer.invoke('import-vue-file'),
   saveDesignProject: (content: string, filePath?: string) =>
     electronAPI.ipcRenderer.invoke('save-design-project', { content, filePath }),

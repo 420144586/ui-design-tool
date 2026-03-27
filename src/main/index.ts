@@ -2,18 +2,32 @@ import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import linuxIcon from '../../resources/icon.png?asset'
 
-const getDesignSavesDir = (): string => join(process.cwd(), 'design-saves')
+/** 与 electron-builder 的 icon/extraResources 一致：开发用仓库 icon，打包后用 resources/favicon.ico */
+const getWindowIcon = (): string | undefined => {
+  if (process.platform === 'darwin') return undefined
+  if (is.dev) {
+    return join(__dirname, '../../icon/favicon.ico')
+  }
+  return join(process.resourcesPath, 'favicon.ico')
+}
+
+/** 设计稿默认目录（与安装位置无关） */
+const getDesignSavesDir = (): string => join(app.getPath('userData'), 'design-saves')
+
+/** 生成预览用 .vue 写入此目录，打包后仍可读写 */
+const getPreviewGeneratedDir = (): string => join(app.getPath('userData'), 'deesign-preview')
 
 function createWindow(): void {
+  const iconPath = getWindowIcon()
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    ...(process.platform === 'linux' ? { icon: linuxIcon } : iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -41,9 +55,23 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.deesign.app')
+
+  const userDataPath = app.getPath('userData')
+  console.log('[deesign] userData:', userDataPath)
+
+  const previewDir = getPreviewGeneratedDir()
+  const designSavesDir = getDesignSavesDir()
+  await mkdir(previewDir, { recursive: true }).catch((e) =>
+    console.error('[deesign] 创建预览目录失败:', previewDir, e)
+  )
+  await mkdir(designSavesDir, { recursive: true }).catch((e) =>
+    console.error('[deesign] 创建设计稿目录失败:', designSavesDir, e)
+  )
+  console.log('[deesign] preview dir:', previewDir)
+  console.log('[deesign] saves dir:', designSavesDir)
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -59,6 +87,8 @@ app.whenReady().then(() => {
   ipcMain.removeHandler('import-vue-file')
   ipcMain.removeHandler('save-design-project')
   ipcMain.removeHandler('load-design-project')
+  ipcMain.removeHandler('read-generated-preview')
+  ipcMain.removeHandler('get-preview-dir')
   ipcMain.handle('export-vue-file', async (_, payload: { content: string; defaultFileName?: string }) => {
     const { canceled, filePath } = await dialog.showSaveDialog({
       title: '导出 Vue 文件',
@@ -73,12 +103,27 @@ app.whenReady().then(() => {
     await writeFile(filePath, payload.content, 'utf-8')
     return { ok: true, canceled: false, filePath }
   })
+  ipcMain.handle('get-preview-dir', () => {
+    return { userDataPath: app.getPath('userData'), previewDir: getPreviewGeneratedDir() }
+  })
   ipcMain.handle('export-generated-vue-file', async (_, payload: { content: string }) => {
-    const generatedDir = join(process.cwd(), 'src', 'renderer', 'src', 'generated')
-    const targetFilePath = join(generatedDir, 'GeneratedFromDesigner.vue')
+    const generatedDir = getPreviewGeneratedDir()
+    const targetFilePath = join(generatedDir, 'preview.html')
     await mkdir(generatedDir, { recursive: true })
     await writeFile(targetFilePath, payload.content, 'utf-8')
+    console.log('[deesign] 预览文件已写入:', targetFilePath, `(${payload.content.length} bytes)`)
     return { ok: true, filePath: targetFilePath }
+  })
+  ipcMain.handle('read-generated-preview', async () => {
+    const targetFilePath = join(getPreviewGeneratedDir(), 'preview.html')
+    try {
+      const content = await readFile(targetFilePath, 'utf-8')
+      console.log('[deesign] 预览文件已读取:', targetFilePath, `(${content.length} bytes)`)
+      return { ok: true, content, filePath: targetFilePath }
+    } catch (e) {
+      console.warn('[deesign] 预览文件读取失败:', targetFilePath, e)
+      return { ok: false, content: '', filePath: targetFilePath }
+    }
   })
   ipcMain.handle('import-vue-file', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({

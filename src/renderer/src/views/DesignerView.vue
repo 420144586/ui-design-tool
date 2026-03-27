@@ -10,7 +10,7 @@ import PropertyPanel from '@renderer/components/PropertyPanel/PropertyPanel.vue'
 import ColumnPresetSettings from '@renderer/components/ColumnPresetSettings/ColumnPresetSettings.vue'
 import ImagePresetSettings from '@renderer/components/ImagePresetSettings/ImagePresetSettings.vue'
 import type { LayoutMode, ViewMode, WorkspaceMode } from '@renderer/types/design'
-import { generateVueSfcCode } from '@renderer/utils/codegen'
+import { generateVueSfcCode, generatePreviewHtml } from '@renderer/utils/codegen'
 import { importVueToDesignElements } from '@renderer/utils/importVue'
 import { parseDesignProjectFile, stringifyDesignProjectFile } from '@renderer/utils/designProjectFile'
 
@@ -176,12 +176,17 @@ const exportCurrentAsVue = async (): Promise<void> => {
 }
 
 const goToTestPage = async (): Promise<void> => {
-  const content = generateVueSfcCode(store.canonicalElements, store.canvas.layoutMode, {
+  const content = generatePreviewHtml(store.canonicalElements, store.canvas.layoutMode, {
     width: store.canvas.width,
     height: store.canvas.height,
     gridSize: store.canvas.gridSize
   })
-  await window.api.exportGeneratedVueFile(content)
+  try {
+    const r = await window.api.exportGeneratedVueFile(content)
+    console.log('[deesign] 预览文件已写入:', r.filePath)
+  } catch (e) {
+    console.error('[deesign] 写入预览文件失败（仍可从内存预览）:', e)
+  }
   router.push('/test/generated')
 }
 
@@ -240,6 +245,19 @@ const saveDesignProject = async (silent: boolean = false): Promise<void> => {
     const result = await invokeSaveDesignProject(content, silent && currentFilePath.value ? currentFilePath.value : undefined)
     if (!result.canceled && result.filePath) {
       currentFilePath.value = result.filePath
+
+      const htmlContent = generatePreviewHtml(store.canonicalElements, store.canvas.layoutMode, {
+        width: store.canvas.width,
+        height: store.canvas.height,
+        gridSize: store.canvas.gridSize
+      })
+      try {
+        const previewResult = await window.api.exportGeneratedVueFile(htmlContent)
+        console.log('[deesign] 预览文件已写入:', previewResult.filePath)
+      } catch (e) {
+        console.error('[deesign] 写入预览文件失败:', e)
+      }
+
       if (silent) {
         showToast('保存成功')
       } else {

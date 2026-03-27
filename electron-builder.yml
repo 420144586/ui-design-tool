@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: vue-ts
+appId: com.deesign.app
+productName: deesign
 directories:
   buildResources: build
 files:
@@ -11,8 +11,14 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+# 安装包与可执行文件图标（Windows 用 .ico）
+icon: icon/favicon.ico
+extraResources:
+  - from: icon/favicon.ico
+    to: favicon.ico
 win:
-  executableName: vue-ts
+  executableName: deesign
+  icon: icon/favicon.ico
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

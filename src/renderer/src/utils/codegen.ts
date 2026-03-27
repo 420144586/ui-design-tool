@@ -516,3 +516,48 @@ export const generateVueSfcCode = (
     '</style>'
   ].join('\n')
 }
+
+const DBUTTON_CSS = `:where(.d-button) {
+  width: 160px; height: 50px; box-sizing: border-box;
+  border-radius: 1px; border: 1px solid #93ADC9;
+  background: linear-gradient(180deg, #fff 0%, #ffffff86 100%);
+  color: #575A6E; cursor: pointer; font-size: 18px;
+}
+.d-button.d-button--ghost { background: transparent; color: #8fb2ff; border-color: #5a7ddb; }
+.d-button.d-button--danger { border-color: #c44; background: linear-gradient(180deg, #e05555 0%, #c62828 100%); color: #fff; }
+.d-button.d-button--success { border-color: #2e7d32; background: linear-gradient(180deg, #4caf50 0%, #2e7d32 100%); color: #fff; }
+.d-button.d-button--pill { border-radius: 999px; }
+.d-button.d-button--compact { padding: 4px 10px; font-size: 12px; }`
+
+export const generatePreviewHtml = (
+  elements: DesignElement[],
+  layoutMode: LayoutMode,
+  canvas: Pick<CanvasConfig, 'width' | 'height' | 'gridSize'>
+): string => {
+  const lines = buildTemplateTree(elements, null, 1)
+  let html = lines.join('\n')
+
+  html = html
+    .replace(/<Transition[^>]*>\n?/g, '')
+    .replace(/<\/Transition>\n?/g, '')
+    .replace(/\s+v-if="[^"]*"/g, '')
+    .replace(/\s+v-show="[^"]*"/g, '')
+    .replace(/\s+appear(?=[\s>\/])/g, '')
+    .replace(/<DButton\s+class="([^"]*)"[^/]*\/>/g, '<button type="button" class="d-button $1">按钮</button>')
+    .replace(/<DButton[^/]*\/>/g, '<button type="button" class="d-button">按钮</button>')
+
+  const css = generateStyleCode(elements, layoutMode, canvas)
+
+  return [
+    '<!DOCTYPE html>',
+    '<html><head><meta charset="UTF-8">',
+    '<style>',
+    'html, body { margin: 0; padding: 0; }',
+    css,
+    DBUTTON_CSS,
+    '</style>',
+    '</head><body>',
+    html,
+    '</body></html>'
+  ].join('\n')
+}

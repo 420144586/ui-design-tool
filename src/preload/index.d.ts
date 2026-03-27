@@ -10,6 +10,15 @@ interface CustomAPI {
     ok: boolean
     filePath: string
   }>
+  readGeneratedPreview: () => Promise<{
+    ok: boolean
+    content: string
+    filePath: string
+  }>
+  getPreviewDir: () => Promise<{
+    userDataPath: string
+    previewDir: string
+  }>
   importVueFile: () => Promise<{
     ok: boolean
     canceled: boolean
