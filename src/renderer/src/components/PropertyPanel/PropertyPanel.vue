@@ -10,7 +10,15 @@ import {
 } from '@renderer/utils/animationCodegen'
 import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { generateStyleBlockForElement } from '@renderer/utils/codegen'
-import type { AnimationPreset, AnimationTimingMode } from '@renderer/types/design'
+import type {
+  AlignContent,
+  AlignItems,
+  AnimationPreset,
+  AnimationTimingMode,
+  FlexDirection,
+  FlexWrap,
+  JustifyContent
+} from '@renderer/types/design'
 
 const store = useDesignStore()
 
@@ -88,6 +96,36 @@ const isImageContainer = computed(
 const isTable = computed(() => selected.value?.kind === 'table')
 
 const isDComponent = computed(() => selected.value?.kind === 'dcomponent')
+
+/** 表格根、图片叶子、封装组件不提供 Flex 容器选项 */
+const showFlexLayoutSection = computed(() => {
+  const s = selected.value
+  if (!s) return false
+  if (s.kind === 'dcomponent' || s.type === 'img') return false
+  if (s.kind === 'table') return false
+  return true
+})
+
+const onFlexLayoutToggle = (e: Event): void => {
+  const on = (e.target as HTMLInputElement).checked
+  const s = selected.value
+  if (!s) return
+  if (on) {
+    store.updateElement(s.id, {
+      flexLayoutEnabled: true,
+      flexDirection: s.flexDirection ?? 'row',
+      flexWrap: s.flexWrap ?? 'nowrap',
+      justifyContent: s.justifyContent ?? 'flex-start',
+      alignItems: s.alignItems ?? 'stretch',
+      alignContent: s.alignContent ?? 'stretch',
+      flexGap: s.flexGap ?? 0,
+      layoutCenterHorizontal: false,
+      layoutCenterVertical: false
+    })
+  } else {
+    store.updateElement(s.id, { flexLayoutEnabled: false })
+  }
+}
 const dButtonHint =
   '每个实例根节点会带唯一 class（与元素 id 相同，如 el-xxx），可写 .el-xxx { … } 只影响当前按钮。修饰示例：d-button--ghost d-button--danger（空格分隔）'
 
@@ -237,6 +275,21 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
   if (!selected.value) return
   store.updateElement(selected.value.id, { [key]: checked } as Partial<DesignElement>)
 }
+
+type PadUseKey = 'paddingUseTop' | 'paddingUseRight' | 'paddingUseBottom' | 'paddingUseLeft'
+type MarUseKey = 'marginUseTop' | 'marginUseRight' | 'marginUseBottom' | 'marginUseLeft'
+
+const paddingUseOn = (key: PadUseKey): boolean => selected.value?.[key] !== false
+const marginUseOn = (key: MarUseKey): boolean => selected.value?.[key] !== false
+
+const setPaddingUse = (key: PadUseKey, checked: boolean): void => {
+  if (!selected.value) return
+  store.updateElement(selected.value.id, { [key]: checked } as Partial<DesignElement>)
+}
+const setMarginUse = (key: MarUseKey, checked: boolean): void => {
+  if (!selected.value) return
+  store.updateElement(selected.value.id, { [key]: checked } as Partial<DesignElement>)
+}
 </script>
 
 <template>
@@ -346,6 +399,117 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
             </div>
           </label>
         </div>
+      </div>
+
+      <div class="style-group" v-if="showFlexLayoutSection">
+        <div class="group-title">Flex 布局</div>
+        <label class="check flex-master-check">
+          <input
+            type="checkbox"
+            :checked="!!selected.flexLayoutEnabled"
+            @change="onFlexLayoutToggle"
+          />
+          使用 Flex 排列子元素
+        </label>
+        <p v-if="!selected.flexLayoutEnabled" class="flex-hint">
+          勾选后内部子元素按主轴排列（可先添加子元素再调整）；适用于多列容器、普通块、图片容器、表格单元格等。
+        </p>
+        <template v-else>
+          <div class="flex-props">
+            <label>
+              flex-direction
+              <select
+                class="common-select"
+                :value="selected.flexDirection ?? 'row'"
+                @change="
+                  update('flexDirection', ($event.target as HTMLSelectElement).value as FlexDirection)
+                "
+              >
+                <option value="row">row</option>
+                <option value="row-reverse">row-reverse</option>
+                <option value="column">column</option>
+                <option value="column-reverse">column-reverse</option>
+              </select>
+            </label>
+            <label>
+              flex-wrap
+              <select
+                class="common-select"
+                :value="selected.flexWrap ?? 'nowrap'"
+                @change="
+                  update('flexWrap', ($event.target as HTMLSelectElement).value as FlexWrap)
+                "
+              >
+                <option value="nowrap">nowrap</option>
+                <option value="wrap">wrap</option>
+                <option value="wrap-reverse">wrap-reverse</option>
+              </select>
+            </label>
+            <label>
+              justify-content
+              <select
+                class="common-select"
+                :value="selected.justifyContent ?? 'flex-start'"
+                @change="
+                  update(
+                    'justifyContent',
+                    ($event.target as HTMLSelectElement).value as JustifyContent
+                  )
+                "
+              >
+                <option value="flex-start">flex-start</option>
+                <option value="flex-end">flex-end</option>
+                <option value="center">center</option>
+                <option value="space-between">space-between</option>
+                <option value="space-around">space-around</option>
+                <option value="space-evenly">space-evenly</option>
+              </select>
+            </label>
+            <label>
+              align-items
+              <select
+                class="common-select"
+                :value="selected.alignItems ?? 'stretch'"
+                @change="
+                  update('alignItems', ($event.target as HTMLSelectElement).value as AlignItems)
+                "
+              >
+                <option value="stretch">stretch</option>
+                <option value="flex-start">flex-start</option>
+                <option value="flex-end">flex-end</option>
+                <option value="center">center</option>
+                <option value="baseline">baseline</option>
+              </select>
+            </label>
+            <label v-if="(selected.flexWrap ?? 'nowrap') !== 'nowrap'">
+              align-content（多行时）
+              <select
+                class="common-select"
+                :value="selected.alignContent ?? 'stretch'"
+                @change="
+                  update('alignContent', ($event.target as HTMLSelectElement).value as AlignContent)
+                "
+              >
+                <option value="stretch">stretch</option>
+                <option value="flex-start">flex-start</option>
+                <option value="flex-end">flex-end</option>
+                <option value="center">center</option>
+                <option value="space-between">space-between</option>
+                <option value="space-around">space-around</option>
+                <option value="space-evenly">space-evenly</option>
+              </select>
+            </label>
+            <label>
+              gap（px）
+              <NumericInput
+                :model-value="selected.flexGap ?? 0"
+                :min="0"
+                :max="400"
+                @update:model-value="update('flexGap', $event)"
+              />
+            </label>
+          </div>
+        </template>
       </div>
 
       <div class="style-group" v-if="!isDComponent && !isImageStandalone">
@@ -522,6 +686,142 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
             />
             左
           </label>
+        </div>
+        <div class="spacing-box-model">
+          <div class="spacing-subtitle">内边距 padding (px)</div>
+          <div class="spacing-grid">
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="paddingUseOn('paddingUseTop')"
+                  @change="setPaddingUse('paddingUseTop', ($event.target as HTMLInputElement).checked)"
+                />
+                上
+              </label>
+              <NumericInput
+                :model-value="selected.paddingTop ?? 0"
+                :min="0"
+                :max="800"
+                @update:model-value="update('paddingTop', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="paddingUseOn('paddingUseRight')"
+                  @change="setPaddingUse('paddingUseRight', ($event.target as HTMLInputElement).checked)"
+                />
+                右
+              </label>
+              <NumericInput
+                :model-value="selected.paddingRight ?? 0"
+                :min="0"
+                :max="800"
+                @update:model-value="update('paddingRight', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="paddingUseOn('paddingUseBottom')"
+                  @change="setPaddingUse('paddingUseBottom', ($event.target as HTMLInputElement).checked)"
+                />
+                下
+              </label>
+              <NumericInput
+                :model-value="selected.paddingBottom ?? 0"
+                :min="0"
+                :max="800"
+                @update:model-value="update('paddingBottom', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="paddingUseOn('paddingUseLeft')"
+                  @change="setPaddingUse('paddingUseLeft', ($event.target as HTMLInputElement).checked)"
+                />
+                左
+              </label>
+              <NumericInput
+                :model-value="selected.paddingLeft ?? 0"
+                :min="0"
+                :max="800"
+                @update:model-value="update('paddingLeft', $event)"
+              />
+            </div>
+          </div>
+          <div class="spacing-subtitle">外边距 margin (px)</div>
+          <div class="spacing-grid">
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="marginUseOn('marginUseTop')"
+                  @change="setMarginUse('marginUseTop', ($event.target as HTMLInputElement).checked)"
+                />
+                上
+              </label>
+              <NumericInput
+                :model-value="selected.marginTop ?? 0"
+                :min="-400"
+                :max="800"
+                @update:model-value="update('marginTop', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="marginUseOn('marginUseRight')"
+                  @change="setMarginUse('marginUseRight', ($event.target as HTMLInputElement).checked)"
+                />
+                右
+              </label>
+              <NumericInput
+                :model-value="selected.marginRight ?? 0"
+                :min="-400"
+                :max="800"
+                @update:model-value="update('marginRight', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="marginUseOn('marginUseBottom')"
+                  @change="setMarginUse('marginUseBottom', ($event.target as HTMLInputElement).checked)"
+                />
+                下
+              </label>
+              <NumericInput
+                :model-value="selected.marginBottom ?? 0"
+                :min="-400"
+                :max="800"
+                @update:model-value="update('marginBottom', $event)"
+              />
+            </div>
+            <div class="spacing-cell">
+              <label class="check side-check">
+                <input
+                  type="checkbox"
+                  :checked="marginUseOn('marginUseLeft')"
+                  @change="setMarginUse('marginUseLeft', ($event.target as HTMLInputElement).checked)"
+                />
+                左
+              </label>
+              <NumericInput
+                :model-value="selected.marginLeft ?? 0"
+                :min="-400"
+                :max="800"
+                @update:model-value="update('marginLeft', $event)"
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -884,7 +1184,7 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
 
 .dim-input-with-pct {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
 }
 
@@ -895,20 +1195,106 @@ const setBorderSide = (key: BorderSideKey, checked: boolean): void => {
 }
 
 .pct-toggle {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 6px;
   flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 10px;
+  box-sizing: border-box;
   font-size: 11px;
-  color: #a8b0c2;
+  color: #c8d0df;
+  background: #0f141c;
+  border: 1px solid #2f3748;
+  border-radius: 6px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
 }
 
-.pct-toggle input {
+.pct-toggle input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
   margin: 0;
   cursor: pointer;
+  accent-color: #4f7cff;
+  flex-shrink: 0;
+}
+
+.spacing-box-model {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed #2f3748;
+}
+
+.spacing-subtitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b96ac;
+  margin-bottom: 8px;
+}
+
+.spacing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.spacing-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.spacing-cell :deep(.numeric-input) {
+  margin-top: 0;
+}
+
+.side-check {
+  font-size: 11px;
+  color: #aeb9cc;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.side-check input[type='checkbox'] {
+  accent-color: #4f7cff;
+  width: 14px;
+  height: 14px;
+}
+
+.flex-master-check {
+  margin-bottom: 8px;
+  color: #c8d0df;
+}
+
+.flex-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #6d7a90;
+  line-height: 1.45;
+}
+
+.flex-props {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 10px 2px;
+  background: #121722;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+}
+
+.flex-props label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #8b96ac;
 }
 
 .common-select {

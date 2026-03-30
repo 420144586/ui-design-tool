@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import type { DesignElement, LayoutMode } from '@renderer/types/design'
 import DButton from '@renderer/D-components/DButton.vue'
+import { useDesignStore } from '@renderer/store/design'
 import { cssBackgroundFill } from '@renderer/utils/elementBackground'
 import { applyBoxBorderToStyle, isBorderSideEnabled } from '@renderer/utils/elementBorder'
 import { applyLayoutCenterToInlineStyle, gridPlacementForElement } from '@renderer/utils/layoutCenter'
 import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
+import { applyPaddingMarginToStyle, effectivePaddingInsets } from '@renderer/utils/elementSpacing'
+import { applyFlexContainerToStyle } from '@renderer/utils/elementFlex'
 
 defineOptions({ name: 'DesignTreeNode' })
 
@@ -27,6 +30,62 @@ const emit = defineEmits<{
   select: [id: string, event?: MouseEvent]
   mousedown: [event: MouseEvent, element: DesignElement]
 }>()
+
+const store = useDesignStore()
+
+const colDrag = ref<{ edgeCol: number; lastX: number } | null>(null)
+const rowDrag = ref<{ edgeRow: number; lastY: number } | null>(null)
+
+const onColMove = (e: MouseEvent): void => {
+  const d = colDrag.value
+  if (!d || props.element.kind !== 'table') return
+  const dx = e.clientX - d.lastX
+  d.lastX = e.clientX
+  if (dx !== 0) store.nudgeTableColumnEdge(props.element.id, d.edgeCol, dx, { skipHistory: true })
+}
+
+const onColUp = (): void => {
+  colDrag.value = null
+  window.removeEventListener('mousemove', onColMove)
+}
+
+const onColResizeStart = (edgeCol: number, e: MouseEvent): void => {
+  if (props.element.kind !== 'table') return
+  e.stopPropagation()
+  e.preventDefault()
+  store.pushDesignHistory()
+  colDrag.value = { edgeCol, lastX: e.clientX }
+  window.addEventListener('mousemove', onColMove)
+  window.addEventListener('mouseup', onColUp, { once: true })
+}
+
+const onRowMove = (e: MouseEvent): void => {
+  const d = rowDrag.value
+  if (!d || props.element.kind !== 'table') return
+  const dy = e.clientY - d.lastY
+  d.lastY = e.clientY
+  if (dy !== 0) store.nudgeTableRowEdge(props.element.id, d.edgeRow, dy, { skipHistory: true })
+}
+
+const onRowUp = (): void => {
+  rowDrag.value = null
+  window.removeEventListener('mousemove', onRowMove)
+}
+
+const onRowResizeStart = (edgeRow: number, e: MouseEvent): void => {
+  if (props.element.kind !== 'table') return
+  e.stopPropagation()
+  e.preventDefault()
+  store.pushDesignHistory()
+  rowDrag.value = { edgeRow, lastY: e.clientY }
+  window.addEventListener('mousemove', onRowMove)
+  window.addEventListener('mouseup', onRowUp, { once: true })
+}
+
+onUnmounted(() => {
+  window.removeEventListener('mousemove', onColMove)
+  window.removeEventListener('mousemove', onRowMove)
+})
 
 const children = computed(() => {
   const list = props.elements.filter((item) => item.parentId === props.element.id)
@@ -96,6 +155,7 @@ const nodeStyle = computed(() => {
   if (props.element.textAlign) commonStyle.textAlign = props.element.textAlign
   if (props.element.borderRadius) commonStyle.borderRadius = `${props.element.borderRadius}px`
   applyBoxBorderToStyle(commonStyle, props.element)
+  applyPaddingMarginToStyle(commonStyle, props.element)
 
   if (props.parent?.kind === 'image' && props.parent.type === 'div') {
     const style: Record<string, string> = { ...commonStyle }
@@ -121,6 +181,33 @@ const nodeStyle = computed(() => {
       style.justifyContent = 'center'
       return style
     }
+  }
+
+  /** 父级启用自定义 flex 时，子项参与主轴排版（非图片/Label 特殊结构） */
+  const parentFlex =
+    props.parent?.flexLayoutEnabled === true &&
+    !(
+      props.parent.kind === 'image' &&
+      props.parent.type === 'div' &&
+      (props.element.type === 'img' ||
+        (props.parent.hasLabel &&
+          props.element.type === 'div' &&
+          props.element.name.endsWith('-label')))
+    )
+  if (parentFlex) {
+    const style: Record<string, string> = { ...commonStyle }
+    const wh = cssWidthHeightStrings(props.element)
+    const isDComponent = props.element.kind === 'dcomponent'
+    style.position = 'relative'
+    style.left = '0'
+    style.top = '0'
+    style.width = wh.width
+    style.height = wh.height
+    style.flexShrink = '0'
+    applyParentBoundsClamp(style, props.element)
+    style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
+    style.opacity = String(props.element.opacity)
+    return style
   }
 
   /** Column 子项由父级 flex 均分高度（等价于 父高 / n），不参与网格/绝对像素叠放 */
@@ -154,21 +241,46 @@ const nodeStyle = computed(() => {
       relativeY.value,
       props.gridSize
     )
-    style.gridColumn = gp.gridColumn
-    style.gridRow = gp.gridRow
+    const isFlexContainer = props.element.flexLayoutEnabled && children.value.length > 0
+    if (isFlexContainer) {
+      style.position = 'absolute'
+      style.left = `${relativeX.value}px`
+      style.top = `${relativeY.value}px`
+      style.zIndex = String(props.element.serial)
+    } else if (!props.parent?.flexLayoutEnabled) {
+      style.gridColumn = gp.gridColumn
+      style.gridRow = gp.gridRow
+    } else {
+      style.flexShrink = '0'
+    }
     style.width = wh.width
     style.height = wh.height
     applyParentBoundsClamp(style, props.element)
     style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
     style.opacity = String(props.element.opacity)
-    style.position = 'relative'
-    if (props.element.kind === 'column' && children.value.length > 0) {
+    if (!isFlexContainer) {
+      style.position = 'relative'
+    }
+    if (
+      props.element.kind === 'column' &&
+      children.value.length > 0 &&
+      !props.element.flexLayoutEnabled
+    ) {
       style.display = 'flex'
       style.flexDirection = 'column'
       style.alignItems = 'stretch'
       style.justifyContent = 'flex-start'
     }
-    applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
+    if (props.element.flexLayoutEnabled && children.value.length > 0) {
+      applyFlexContainerToStyle(style, props.element)
+      style.overflow =
+        props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
+          ? 'auto'
+          : 'hidden'
+    }
+    if (!(props.element.flexLayoutEnabled && children.value.length > 0)) {
+      applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
+    }
     return style
   }
 
@@ -180,13 +292,26 @@ const nodeStyle = computed(() => {
   applyParentBoundsClamp(style, props.element)
   style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
   style.opacity = String(props.element.opacity)
-  if (props.element.kind === 'column' && children.value.length > 0) {
+  if (
+    props.element.kind === 'column' &&
+    children.value.length > 0 &&
+    !props.element.flexLayoutEnabled
+  ) {
     style.display = 'flex'
     style.flexDirection = 'column'
     style.alignItems = 'stretch'
     style.justifyContent = 'flex-start'
   }
-  applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
+  if (props.element.flexLayoutEnabled && children.value.length > 0) {
+    applyFlexContainerToStyle(style, props.element)
+    style.overflow =
+      props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
+        ? 'auto'
+        : 'hidden'
+  }
+  if (!(props.element.flexLayoutEnabled && children.value.length > 0)) {
+    applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
+  }
   return style
 })
 
@@ -221,18 +346,131 @@ const tableCellChildren = (cell: DesignElement): DesignElement[] =>
     .filter((item) => item.parentId === cell.id)
     .sort((a, b) => a.y - b.y || a.x - b.x)
 
+const showTableResizeHandles = computed(
+  () => props.element.kind === 'table' && props.selectedElementIds.includes(props.element.id)
+)
+
+/** 列分割线位置（%），长度 cols-1 */
+const colResizeHandleLeftPct = computed(() => {
+  if (props.element.kind !== 'table') return [] as number[]
+  const cols = tableCols.value
+  const tw = Math.max(1, props.element.width)
+  const ws: number[] = []
+  for (let c = 0; c < cols; c += 1) {
+    const cell = tableCellAt(0, c)
+    ws.push(cell?.width && cell.width > 0 ? cell.width : tw / cols)
+  }
+  const sum = ws.reduce((a, b) => a + b, 0) || 1
+  const out: number[] = []
+  let acc = 0
+  for (let i = 0; i < cols - 1; i += 1) {
+    acc += (ws[i]! / sum) * 100
+    out.push(acc)
+  }
+  return out
+})
+
+const rowResizeHandleTopPct = computed(() => {
+  if (props.element.kind !== 'table') return [] as number[]
+  const rows = tableRows.value
+  const th = Math.max(1, props.element.height)
+  const hs: number[] = []
+  for (let r = 0; r < rows; r += 1) {
+    const cell = tableCellAt(r, 0)
+    hs.push(cell?.height && cell.height > 0 ? cell.height : th / rows)
+  }
+  const sum = hs.reduce((a, b) => a + b, 0) || 1
+  const out: number[] = []
+  let acc = 0
+  for (let i = 0; i < rows - 1; i += 1) {
+    acc += (hs[i]! / sum) * 100
+    out.push(acc)
+  }
+  return out
+})
+
+function tableTdStyle(row: number, col: number): Record<string, string> {
+  if (props.element.kind !== 'table') return {}
+  const cell = tableCellAt(row, col)
+  if (!cell) return {}
+  const tw = Math.max(1, props.element.width)
+  const th = Math.max(1, props.element.height)
+  const cols = tableCols.value
+  const rows = tableRows.value
+  const ws: number[] = []
+  for (let c = 0; c < cols; c += 1) {
+    const cl = tableCellAt(0, c)
+    ws.push(cl?.width && cl.width > 0 ? cl.width : tw / cols)
+  }
+  const hs: number[] = []
+  for (let r = 0; r < rows; r += 1) {
+    const cl = tableCellAt(r, 0)
+    hs.push(cl?.height && cl.height > 0 ? cl.height : th / rows)
+  }
+  const sumW = ws.reduce((a, b) => a + b, 0) || 1
+  const sumH = hs.reduce((a, b) => a + b, 0) || 1
+  const wPct = ((ws[col] ?? 0) / sumW) * 100
+  const hPct = ((hs[row] ?? 0) / sumH) * 100
+  const st: Record<string, string> = {
+    width: `${wPct}%`,
+    height: `${hPct}%`
+  }
+  applyPaddingMarginToStyle(st, cell)
+  return st
+}
+
+function tableTdSlotWrapperStyle(row: number, col: number): Record<string, string> {
+  const cell = tableCellAt(row, col)
+  const base: Record<string, string> = {}
+  if (cell?.flexLayoutEnabled) {
+    applyFlexContainerToStyle(base, cell)
+    base.width = '100%'
+    base.height = '100%'
+    base.minHeight = '0'
+    base.boxSizing = 'border-box'
+    base.position = 'relative'
+    base.overflow =
+      cell.flexWrap === 'wrap' || cell.flexWrap === 'wrap-reverse' ? 'auto' : 'hidden'
+  }
+  return base
+}
+
 /** 单元格上默认 stop，否则会拦掉外层表格的 mousedown，表几乎无法拖动；选中整张表时再放开冒泡 */
 const onTableCellSlotMouseDown = (e: MouseEvent): void => {
   if (props.selectedElementIds.includes(props.element.id)) return
   e.stopPropagation()
 }
 
+/** children-layer 用 absolute + inset 铺满父盒；若父有 padding，inset 需设为四边 padding，否则子项会画进 padding 带里 */
+function applyChildrenLayerInset(style: Record<string, string>, el: DesignElement): void {
+  const p = effectivePaddingInsets(el)
+  if (p.top === 0 && p.right === 0 && p.bottom === 0 && p.left === 0) {
+    style.inset = '0'
+  } else {
+    style.top = `${p.top}px`
+    style.right = `${p.right}px`
+    style.bottom = `${p.bottom}px`
+    style.left = `${p.left}px`
+  }
+}
+
 const childContainerStyle = computed(() => {
   const style: Record<string, string> = {}
   if (children.value.length === 0) return style
+  if (props.element.flexLayoutEnabled) {
+    style.position = 'absolute'
+    applyChildrenLayerInset(style, props.element)
+    applyFlexContainerToStyle(style, props.element)
+    style.boxSizing = 'border-box'
+    style.overflow =
+      props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
+        ? 'auto'
+        : 'hidden'
+    return style
+  }
   if (props.element.kind === 'column') {
     style.position = 'absolute'
-    style.inset = '0'
+    applyChildrenLayerInset(style, props.element)
     style.display = 'flex'
     style.flexDirection = 'column'
     style.alignItems = 'stretch'
@@ -242,7 +480,7 @@ const childContainerStyle = computed(() => {
   }
   if (props.element.kind === 'image' && props.element.type === 'div') {
     style.position = 'absolute'
-    style.inset = '0'
+    applyChildrenLayerInset(style, props.element)
     style.display = 'flex'
     style.flexDirection = 'row'
     style.alignItems = 'center'
@@ -253,7 +491,7 @@ const childContainerStyle = computed(() => {
   if (props.layoutMode === 'grid') {
     const box = layoutPxBox.value
     style.position = 'absolute'
-    style.inset = '0'
+    applyChildrenLayerInset(style, props.element)
     style.display = 'grid'
     style.placeItems = 'center'
     style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(box.width / props.gridSize))}, ${props.gridSize}px)`
@@ -261,7 +499,7 @@ const childContainerStyle = computed(() => {
     return style
   }
   style.position = 'absolute'
-  style.inset = '0'
+  applyChildrenLayerInset(style, props.element)
   return style
 })
 </script>
@@ -285,34 +523,59 @@ const childContainerStyle = computed(() => {
     :style="{ ...nodeStyle, ...tableStyle }"
     @mousedown.stop="emit('mousedown', $event, element)"
   >
-    <table class="designer-table">
-      <tr v-for="ri in tableRows" :key="'tr-' + ri">
-        <td v-for="ci in tableCols" :key="'td-' + ri + '-' + ci">
-          <div
-            v-if="tableCellAt(ri - 1, ci - 1)"
-            class="designer-td-slot"
-            :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
-            @mousedown="onTableCellSlotMouseDown"
-            @click.self="(e) => emit('select', tableCellAt(ri - 1, ci - 1)!.id, e)"
+    <div class="designer-table-shell">
+      <table class="designer-table">
+        <tr v-for="ri in tableRows" :key="'tr-' + ri">
+          <td
+            v-for="ci in tableCols"
+            :key="'td-' + ri + '-' + ci"
+            :style="tableTdStyle(ri - 1, ci - 1)"
           >
-            <DesignTreeNode
-              v-for="sub in tableCellChildren(tableCellAt(ri - 1, ci - 1)!)"
-              :key="sub.id"
-              :element="sub"
-              :elements="elements"
-              :selected-element-ids="selectedElementIds"
-              :layout-mode="layoutMode"
-              :grid-size="gridSize"
-              :surface-width="surfaceWidth"
-              :surface-height="surfaceHeight"
-              :parent="tableCellAt(ri - 1, ci - 1)"
-              @select="(id, ev) => emit('select', id, ev)"
-              @mousedown="(event, node) => emit('mousedown', event, node)"
-            />
-          </div>
-        </td>
-      </tr>
-    </table>
+            <div
+              v-if="tableCellAt(ri - 1, ci - 1)"
+              class="designer-td-slot"
+              :style="tableTdSlotWrapperStyle(ri - 1, ci - 1)"
+              :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
+              @mousedown="onTableCellSlotMouseDown"
+              @click.self="(e) => emit('select', tableCellAt(ri - 1, ci - 1)!.id, e)"
+            >
+              <DesignTreeNode
+                v-for="sub in tableCellChildren(tableCellAt(ri - 1, ci - 1)!)"
+                :key="sub.id"
+                :element="sub"
+                :elements="elements"
+                :selected-element-ids="selectedElementIds"
+                :layout-mode="layoutMode"
+                :grid-size="gridSize"
+                :surface-width="surfaceWidth"
+                :surface-height="surfaceHeight"
+                :parent="tableCellAt(ri - 1, ci - 1)"
+                @select="(id, ev) => emit('select', id, ev)"
+                @mousedown="(event, node) => emit('mousedown', event, node)"
+              />
+            </div>
+          </td>
+        </tr>
+      </table>
+      <div v-if="showTableResizeHandles" class="table-resize-overlay" aria-hidden="true">
+        <div
+          v-for="(pct, idx) in colResizeHandleLeftPct"
+          :key="'col-edge-' + idx"
+          class="table-resize-handle table-resize-handle--col"
+          :style="{ left: pct + '%' }"
+          title="拖拽调整列宽"
+          @mousedown="onColResizeStart(idx + 1, $event)"
+        />
+        <div
+          v-for="(pct, idx) in rowResizeHandleTopPct"
+          :key="'row-edge-' + idx"
+          class="table-resize-handle table-resize-handle--row"
+          :style="{ top: pct + '%' }"
+          title="拖拽调整行高"
+          @mousedown="onRowResizeStart(idx + 1, $event)"
+        />
+      </div>
+    </div>
   </div>
   <div
     v-else-if="element.kind === 'dcomponent'"
@@ -424,6 +687,13 @@ const childContainerStyle = computed(() => {
   display: block;
 }
 
+.designer-table-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
 .designer-table {
   width: 100%;
   height: 100%;
@@ -435,6 +705,45 @@ const childContainerStyle = computed(() => {
   border: 1px solid var(--table-border, #d0d0d0);
   vertical-align: top;
   padding: 0;
+}
+
+.table-resize-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.table-resize-handle {
+  pointer-events: auto;
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.table-resize-handle--col {
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  background: transparent;
+}
+
+.table-resize-handle--col:hover {
+  background: rgba(127, 212, 252, 0.35);
+}
+
+.table-resize-handle--row {
+  left: 0;
+  right: 0;
+  height: 10px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+  background: transparent;
+}
+
+.table-resize-handle--row:hover {
+  background: rgba(127, 212, 252, 0.35);
 }
 
 .designer-td-slot {

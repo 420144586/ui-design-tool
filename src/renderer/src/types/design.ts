@@ -120,10 +120,39 @@ export interface DesignElement {
   borderRight?: boolean
   borderBottom?: boolean
   borderLeft?: boolean
+  /** 内边距（px），未设置视为 0 */
+  paddingTop?: number
+  paddingRight?: number
+  paddingBottom?: number
+  paddingLeft?: number
+  /** 外边距（px），未设置视为 0 */
+  marginTop?: number
+  marginRight?: number
+  marginBottom?: number
+  marginLeft?: number
+  /** 为 false 时不生成该侧的 padding（与四边数值配合，类似边框「显示边」） */
+  paddingUseTop?: boolean
+  paddingUseRight?: boolean
+  paddingUseBottom?: boolean
+  paddingUseLeft?: boolean
+  /** 为 false 时不生成该侧的 margin */
+  marginUseTop?: boolean
+  marginUseRight?: boolean
+  marginUseBottom?: boolean
+  marginUseLeft?: boolean
   /** 在父容器内水平居中（absolute：left:50%+translateX；grid：justify-self） */
   layoutCenterHorizontal?: boolean
   /** 在父容器内垂直居中（absolute：top:50%+translateY；grid：align-self） */
   layoutCenterVertical?: boolean
+  /** 子级容器使用 flex 布局（children-layer / 表格单元格槽位） */
+  flexLayoutEnabled?: boolean
+  flexDirection?: FlexDirection
+  flexWrap?: FlexWrap
+  justifyContent?: JustifyContent
+  alignItems?: AlignItems
+  alignContent?: AlignContent
+  /** flex 子项间距（px） */
+  flexGap?: number
   /** 是否启用导出动画（Vue Transition + CSS） */
   animationEnabled?: boolean
   /** 动画触发方式：visible=appear 入场；hidden/v-if/v-show 与脚本 animShow 联动 */
@@ -138,6 +167,25 @@ export interface DesignElement {
   animationBezierX2?: number
   animationBezierY2?: number
 }
+
+export type FlexDirection = 'row' | 'row-reverse' | 'column' | 'column-reverse'
+export type FlexWrap = 'nowrap' | 'wrap' | 'wrap-reverse'
+export type JustifyContent =
+  | 'flex-start'
+  | 'flex-end'
+  | 'center'
+  | 'space-between'
+  | 'space-around'
+  | 'space-evenly'
+export type AlignItems = 'stretch' | 'flex-start' | 'flex-end' | 'center' | 'baseline'
+export type AlignContent =
+  | 'stretch'
+  | 'flex-start'
+  | 'flex-end'
+  | 'center'
+  | 'space-between'
+  | 'space-around'
+  | 'space-evenly'
 
 export type PresetKind = 'div' | 'column' | 'image' | 'table' | 'dcomponent'
 

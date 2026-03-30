@@ -258,11 +258,7 @@ const saveDesignProject = async (silent: boolean = false): Promise<void> => {
         console.error('[deesign] 写入预览文件失败:', e)
       }
 
-      if (silent) {
-        showToast('保存成功')
-      } else {
-        window.alert(`设计稿已保存到：\n${result.filePath}`)
-      }
+      showToast(`已保存：${result.filePath}`)
     }
   } finally {
     if (!silent) {
@@ -288,6 +284,19 @@ const loadDesignProject = async (): Promise<void> => {
     }
   } finally {
     isLoading.value = false
+  }
+}
+
+const clearCanvas = (): void => {
+  if (!store.canonicalElements.length) {
+    showToast('画布已经是空的')
+    return
+  }
+  if (window.confirm('确定要清空画布吗？此操作可通过撤销恢复。')) {
+    store.replaceElements([])
+    store.clearSelection()
+    currentFilePath.value = null
+    showToast('画布已清空')
   }
 }
 
@@ -432,6 +441,7 @@ onUnmounted(() => {
         <button class="action" @click="store.adjustZoom(0.1)">+</button>
         <button class="action" type="button" @click="saveDesignProject()">保存设计稿</button>
         <button class="action" type="button" @click="loadDesignProject()">读取设计稿</button>
+        <button class="action danger" type="button" @click="clearCanvas()">清空画布</button>
         <button class="action" @click="importFromVue()">导入 .vue</button>
         <button class="action export" @click="exportCurrentAsVue()">导出 .vue</button>
       </div>

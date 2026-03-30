@@ -12,6 +12,8 @@ import {
   layoutCenterCssForGrid
 } from '@renderer/utils/layoutCenter'
 import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
+import { marginCssDecl, paddingCssDecl } from '@renderer/utils/elementSpacing'
+import { flexContainerCssLines } from '@renderer/utils/elementFlex'
 
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
@@ -189,6 +191,14 @@ export function generateStyleBlockForElement(
   const wh = cssWidthHeightStrings(element)
   const gridPlacementModel = { ...element, width: boxPx.width, height: boxPx.height }
 
+  const parentFlex = parent?.flexLayoutEnabled === true
+
+  /** Flex 父级内部用 flex 排版时，不再对「自身这一条 grid 子项规则」叠加 place-self（与内部 flex 易冲突） */
+  const gridItemSelfCss = (): string[] => {
+    if (element.flexLayoutEnabled && hasChildren) return []
+    return layoutCenterCssForGrid(element)
+  }
+
   const commonStyles: string[] = []
   if (element.color) commonStyles.push(`  color: ${element.color};`)
   if (element.fontSize) commonStyles.push(`  font-size: ${element.fontSize}px;`)
@@ -199,6 +209,8 @@ export function generateStyleBlockForElement(
   commonStyles.push(
     `  box-sizing: ${element.boxSizing === 'content-box' ? 'content-box' : 'border-box'};`
   )
+  commonStyles.push(...paddingCssDecl(element))
+  commonStyles.push(...marginCssDecl(element))
 
   if (element.kind === 'image' && element.type === 'img') {
     if (layoutMode === 'grid') {
@@ -207,7 +219,7 @@ export function generateStyleBlockForElement(
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
-        ...layoutCenterCssForGrid(element),
+        ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  opacity: ${element.opacity};`,
@@ -234,22 +246,42 @@ export function generateStyleBlockForElement(
 
   if (element.kind === 'image' && element.type === 'div') {
     const gap = element.gap ?? 10
+    const imageFlexInner = element.flexLayoutEnabled
+      ? [...flexContainerCssLines(element), '  overflow: hidden;']
+      : [
+          '  display: flex;',
+          '  flex-direction: row;',
+          '  align-items: center;',
+          `  gap: ${gap}px;`
+        ]
     if (layoutMode === 'grid') {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
+      if (element.flexLayoutEnabled && hasChildren) {
+        return [
+          `.${element.id} {`,
+          '  position: absolute;',
+          `  z-index: ${element.serial};`,
+          ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+          `  width: ${wh.width};`,
+          `  height: ${wh.height};`,
+          `  background: ${cssBackgroundFill(element)};`,
+          `  opacity: ${element.opacity};`,
+          ...imageFlexInner,
+          ...commonStyles,
+          '}'
+        ].join('\n')
+      }
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
-        ...layoutCenterCssForGrid(element),
+        ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
-        '  display: flex;',
-        '  flex-direction: row;',
-        '  align-items: center;',
-        `  gap: ${gap}px;`,
+        ...imageFlexInner,
         ...commonStyles,
         '}'
       ].join('\n')
@@ -263,10 +295,7 @@ export function generateStyleBlockForElement(
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
-      '  display: flex;',
-      '  flex-direction: row;',
-      '  align-items: center;',
-      `  gap: ${gap}px;`,
+      ...imageFlexInner,
       ...commonStyles,
       '}'
     ].join('\n')
@@ -274,13 +303,46 @@ export function generateStyleBlockForElement(
 
   if (element.kind === 'table') {
     const bc = element.borderColor ?? '#d0d0d0'
+    const rows = Math.max(1, Math.floor(Number(element.tableRows) || 5))
+    const cols = Math.max(1, Math.floor(Number(element.tableCols) || 5))
+    const tw = Math.max(1, element.width)
+    const th = Math.max(1, element.height)
+    const cellRuleBlocks: string[] = []
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const cell = elements.find(
+          (el) =>
+            el.parentId === element.id &&
+            el.isTableCell &&
+            el.tableCellRow === r &&
+            el.tableCellCol === c
+        )
+        if (!cell) continue
+        const wPct = (cell.width / tw) * 100
+        const hPct = (cell.height / th) * 100
+        const inner: string[] = [
+          `  width: ${wPct.toFixed(4)}%;`,
+          `  height: ${hPct.toFixed(4)}%;`,
+          '  box-sizing: border-box;',
+          ...paddingCssDecl(cell),
+          ...marginCssDecl(cell),
+          ...(cell.flexLayoutEnabled
+            ? [...flexContainerCssLines(cell), '  overflow: hidden;']
+            : [])
+        ]
+        cellRuleBlocks.push(
+          `.${element.id} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) {\n${inner.join('\n')}\n}`
+        )
+      }
+    }
+    const cellRules = cellRuleBlocks.length ? `\n${cellRuleBlocks.join('\n')}` : ''
     if (layoutMode === 'grid') {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
-        ...layoutCenterCssForGrid(element),
+        ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
@@ -294,8 +356,11 @@ export function generateStyleBlockForElement(
         `  border: 1px solid ${bc};`,
         '  position: relative;',
         '  vertical-align: top;',
-        '}'
-      ].join('\n')
+        '}',
+        cellRules
+      ]
+        .filter(Boolean)
+        .join('\n')
     }
     return [
       `.${element.id} {`,
@@ -314,8 +379,11 @@ export function generateStyleBlockForElement(
       `  border: 1px solid ${bc};`,
       '  position: relative;',
       '  vertical-align: top;',
-      '}'
-    ].join('\n')
+      '}',
+      cellRules
+    ]
+      .filter(Boolean)
+      .join('\n')
   }
 
   if (parent?.kind === 'image' && element.type === 'img') {
@@ -354,7 +422,37 @@ export function generateStyleBlockForElement(
     ].join('\n')
   }
 
-  if (parent?.kind === 'column' && (element.kind === 'div' || element.kind === 'column')) {
+  if (
+    parentFlex &&
+    !(element.kind === 'image' && element.type === 'img') &&
+    !(
+      parent &&
+      parent.kind === 'image' &&
+      parent.hasLabel &&
+      element.type === 'div' &&
+      element.name.endsWith('-label')
+    )
+  ) {
+    const bg =
+      element.kind === 'dcomponent' ? 'transparent' : cssBackgroundFill(element)
+    return [
+      `.${element.id} {`,
+      '  position: relative;',
+      '  flex-shrink: 0;',
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
+      `  background: ${bg};`,
+      `  opacity: ${element.opacity};`,
+      ...commonStyles,
+      '}'
+    ].join('\n')
+  }
+
+  if (
+    parent?.kind === 'column' &&
+    (element.kind === 'div' || element.kind === 'column') &&
+    !parentFlex
+  ) {
     return [
       `.${element.id} {`,
       '  position: relative;',
@@ -378,7 +476,7 @@ export function generateStyleBlockForElement(
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
-        ...layoutCenterCssForGrid(element),
+        ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
@@ -392,20 +490,56 @@ export function generateStyleBlockForElement(
       ].join('\n')
     }
     if (element.kind === 'column' && hasChildren) {
+      const colInner = element.flexLayoutEnabled
+        ? [...flexContainerCssLines(element), '  overflow: hidden;']
+        : [
+            '  display: flex;',
+            '  flex-direction: column;',
+            '  align-items: stretch;',
+            '  justify-content: flex-start;',
+            '  overflow: hidden;'
+          ]
+      if (element.flexLayoutEnabled) {
+        return [
+          `.${element.id} {`,
+          '  position: absolute;',
+          `  z-index: ${element.serial};`,
+          ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+          `  width: ${wh.width};`,
+          `  height: ${wh.height};`,
+          `  background: ${cssBackgroundFill(element)};`,
+          `  opacity: ${element.opacity};`,
+          ...colInner,
+          ...commonStyles,
+          '}'
+        ].join('\n')
+      }
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
-        ...layoutCenterCssForGrid(element),
+        ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
-        '  display: flex;',
-        '  flex-direction: column;',
-        '  align-items: stretch;',
-        '  justify-content: flex-start;',
+        ...colInner,
+        ...commonStyles,
+        '}'
+      ].join('\n')
+    }
+    if (hasChildren && element.flexLayoutEnabled) {
+      return [
+        `.${element.id} {`,
+        '  position: absolute;',
+        `  z-index: ${element.serial};`,
+        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
+        `  background: ${cssBackgroundFill(element)};`,
+        `  opacity: ${element.opacity};`,
+        ...flexContainerCssLines(element),
         '  overflow: hidden;',
         ...commonStyles,
         '}'
@@ -415,7 +549,7 @@ export function generateStyleBlockForElement(
       `.${element.id} {`,
       `  grid-column: ${gp.gridColumn};`,
       `  grid-row: ${gp.gridRow};`,
-      ...layoutCenterCssForGrid(element),
+      ...gridItemSelfCss(),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
@@ -431,6 +565,15 @@ export function generateStyleBlockForElement(
   }
 
   if (element.kind === 'column' && hasChildren) {
+    const colInner = element.flexLayoutEnabled
+      ? [...flexContainerCssLines(element), '  overflow: hidden;']
+      : [
+          '  display: flex;',
+          '  flex-direction: column;',
+          '  align-items: stretch;',
+          '  justify-content: flex-start;',
+          '  overflow: hidden;'
+        ]
     return [
       `.${element.id} {`,
       '  position: absolute;',
@@ -440,15 +583,19 @@ export function generateStyleBlockForElement(
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
-      '  display: flex;',
-      '  flex-direction: column;',
-      '  align-items: stretch;',
-      '  justify-content: flex-start;',
-      '  overflow: hidden;',
+      ...colInner,
       ...commonStyles,
       '}'
     ].join('\n')
   }
+
+  const flexParentAbs =
+    hasChildren && element.flexLayoutEnabled
+      ? [...flexContainerCssLines(element), '  overflow: hidden;']
+      : []
+  const leafOnlyCenter: string[] = !hasChildren
+    ? ['  display: flex;', '  align-items: center;', '  justify-content: center;']
+    : []
 
   return [
     `.${element.id} {`,
@@ -459,9 +606,8 @@ export function generateStyleBlockForElement(
     `  height: ${wh.height};`,
     `  background: ${cssBackgroundFill(element)};`,
     `  opacity: ${element.opacity};`,
-    hasChildren ? '' : '  display: flex;',
-    hasChildren ? '' : '  align-items: center;',
-    hasChildren ? '' : '  justify-content: center;',
+    ...flexParentAbs,
+    ...leafOnlyCenter,
     ...commonStyles,
     '}'
   ]
