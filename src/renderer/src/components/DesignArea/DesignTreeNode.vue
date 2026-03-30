@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref } from 'vue'
 import type { DesignElement, LayoutMode } from '@renderer/types/design'
 import DButton from '@renderer/D-components/DButton.vue'
+import DInput from '@renderer/D-components/DInput.vue'
 import { useDesignStore } from '@renderer/store/design'
 import { cssBackgroundFill } from '@renderer/utils/elementBackground'
 import { applyBoxBorderToStyle, isBorderSideEnabled } from '@renderer/utils/elementBorder'
@@ -152,7 +153,7 @@ const nodeStyle = computed(() => {
   if (props.element.color) commonStyle.color = props.element.color
   if (props.element.fontSize) commonStyle.fontSize = `${props.element.fontSize}px`
   if (props.element.fontWeight) commonStyle.fontWeight = props.element.fontWeight
-  if (props.element.textAlign) commonStyle.textAlign = props.element.textAlign
+  commonStyle.textAlign = props.element.textAlign ?? 'center'
   if (props.element.borderRadius) commonStyle.borderRadius = `${props.element.borderRadius}px`
   applyBoxBorderToStyle(commonStyle, props.element)
   applyPaddingMarginToStyle(commonStyle, props.element)
@@ -241,8 +242,9 @@ const nodeStyle = computed(() => {
       relativeY.value,
       props.gridSize
     )
-    const isFlexContainer = props.element.flexLayoutEnabled && children.value.length > 0
-    if (isFlexContainer) {
+    /** 含子项的 flex 容器在网格模式下叠在格线上（和导出一致）；无子项时仍占网格元并用 flex 排版 */
+    const flexGridAsAbsolute = props.element.flexLayoutEnabled && children.value.length > 0
+    if (flexGridAsAbsolute) {
       style.position = 'absolute'
       style.left = `${relativeX.value}px`
       style.top = `${relativeY.value}px`
@@ -258,7 +260,7 @@ const nodeStyle = computed(() => {
     applyParentBoundsClamp(style, props.element)
     style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
     style.opacity = String(props.element.opacity)
-    if (!isFlexContainer) {
+    if (!flexGridAsAbsolute) {
       style.position = 'relative'
     }
     if (
@@ -271,14 +273,14 @@ const nodeStyle = computed(() => {
       style.alignItems = 'stretch'
       style.justifyContent = 'flex-start'
     }
-    if (props.element.flexLayoutEnabled && children.value.length > 0) {
+    if (props.element.flexLayoutEnabled) {
       applyFlexContainerToStyle(style, props.element)
       style.overflow =
         props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
           ? 'auto'
           : 'hidden'
     }
-    if (!(props.element.flexLayoutEnabled && children.value.length > 0)) {
+    if (!props.element.flexLayoutEnabled) {
       applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
     }
     return style
@@ -302,20 +304,33 @@ const nodeStyle = computed(() => {
     style.alignItems = 'stretch'
     style.justifyContent = 'flex-start'
   }
-  if (props.element.flexLayoutEnabled && children.value.length > 0) {
+  if (props.element.flexLayoutEnabled) {
     applyFlexContainerToStyle(style, props.element)
     style.overflow =
       props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
         ? 'auto'
         : 'hidden'
   }
-  if (!(props.element.flexLayoutEnabled && children.value.length > 0)) {
+  if (!props.element.flexLayoutEnabled) {
     applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
   }
   return style
 })
 
 const labelText = computed(() => props.element.text.trim())
+
+/** 封装组件根节点需直接承载排版样式，设计器内才能与导出 CSS 一致 */
+const dcomponentTypographyStyle = computed((): Record<string, string> => {
+  if (props.element.kind !== 'dcomponent') return {}
+  const st: Record<string, string> = {}
+  if (props.element.color) st.color = props.element.color
+  st.textAlign = props.element.textAlign ?? 'center'
+  if (props.element.fontSize != null && props.element.fontSize > 0) {
+    st.fontSize = `${props.element.fontSize}px`
+  }
+  if (props.element.fontWeight) st.fontWeight = props.element.fontWeight
+  return st
+})
 
 const tableRows = computed(() =>
   Math.max(1, Math.floor(Number(props.element.tableRows) || 5))
@@ -347,7 +362,10 @@ const tableCellChildren = (cell: DesignElement): DesignElement[] =>
     .sort((a, b) => a.y - b.y || a.x - b.x)
 
 const showTableResizeHandles = computed(
-  () => props.element.kind === 'table' && props.selectedElementIds.includes(props.element.id)
+  () =>
+    props.element.kind === 'table' &&
+    props.selectedElementIds.includes(props.element.id) &&
+    !!props.element.tableResizeEnabled
 )
 
 /** 列分割线位置（%），长度 cols-1 */
@@ -389,6 +407,18 @@ const rowResizeHandleTopPct = computed(() => {
   return out
 })
 
+function tableTrStyle(row: number): Record<string, string> {
+  if (props.element.kind !== 'table') return {}
+  const isOddRow = row % 2 === 0
+  const st: Record<string, string> = {}
+  if (props.element.tableTrOddBgEnabled && isOddRow) {
+    st.background = props.element.tableTrOddBg?.trim() || '#e8eef5'
+  } else if (props.element.tableTrEvenBgEnabled && !isOddRow) {
+    st.background = props.element.tableTrEvenBg?.trim() || '#ffffff'
+  }
+  return st
+}
+
 function tableTdStyle(row: number, col: number): Record<string, string> {
   if (props.element.kind !== 'table') return {}
   const cell = tableCellAt(row, col)
@@ -416,6 +446,12 @@ function tableTdStyle(row: number, col: number): Record<string, string> {
     height: `${hPct}%`
   }
   applyPaddingMarginToStyle(st, cell)
+  const colOdd = col % 2 === 0
+  if (props.element.tableTdOddBgEnabled && colOdd) {
+    st.background = props.element.tableTdOddBg?.trim() || '#e8eef5'
+  } else if (props.element.tableTdEvenBgEnabled && !colOdd) {
+    st.background = props.element.tableTdEvenBg?.trim() || '#ffffff'
+  }
   return st
 }
 
@@ -435,10 +471,27 @@ function tableTdSlotWrapperStyle(row: number, col: number): Record<string, strin
   return base
 }
 
-/** 单元格上默认 stop，否则会拦掉外层表格的 mousedown，表几乎无法拖动；选中整张表时再放开冒泡 */
+/**
+ * 已选中整张表：不拦截，让 mousedown 冒泡到表根以便拖动。
+ * 未选中：仅当点中单元格槽位自身（非子元素）时不拦截，冒泡到表根以便再次选中表；
+ * 子元素上的 mousedown 已由子节点 .stop 消化，不会进入此处。
+ */
+const tableSlotPointerHadTableSelected = ref(false)
+
 const onTableCellSlotMouseDown = (e: MouseEvent): void => {
-  if (props.selectedElementIds.includes(props.element.id)) return
-  e.stopPropagation()
+  const tableSelected = props.selectedElementIds.includes(props.element.id)
+  tableSlotPointerHadTableSelected.value = tableSelected
+  if (tableSelected) return
+  if (e.target !== e.currentTarget) return
+}
+
+/** 仅在「按下时整张表已选中」时用 click 切换到单元格，避免未选表时空格点选后被 click 抢成单元格选中 */
+const onTableCellSlotClick = (e: MouseEvent, row: number, col: number): void => {
+  if (e.target !== e.currentTarget) return
+  if (!tableSlotPointerHadTableSelected.value) return
+  const cell = tableCellAt(row, col)
+  if (!cell) return
+  emit('select', cell.id, e)
 }
 
 /** children-layer 用 absolute + inset 铺满父盒；若父有 padding，inset 需设为四边 padding，否则子项会画进 padding 带里 */
@@ -525,7 +578,11 @@ const childContainerStyle = computed(() => {
   >
     <div class="designer-table-shell">
       <table class="designer-table">
-        <tr v-for="ri in tableRows" :key="'tr-' + ri">
+        <tr
+          v-for="ri in tableRows"
+          :key="'tr-' + ri"
+          :style="tableTrStyle(ri - 1)"
+        >
           <td
             v-for="ci in tableCols"
             :key="'td-' + ri + '-' + ci"
@@ -537,7 +594,7 @@ const childContainerStyle = computed(() => {
               :style="tableTdSlotWrapperStyle(ri - 1, ci - 1)"
               :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
               @mousedown="onTableCellSlotMouseDown"
-              @click.self="(e) => emit('select', tableCellAt(ri - 1, ci - 1)!.id, e)"
+              @click.self="onTableCellSlotClick($event, ri - 1, ci - 1)"
             >
               <DesignTreeNode
                 v-for="sub in tableCellChildren(tableCellAt(ri - 1, ci - 1)!)"
@@ -589,6 +646,14 @@ const childContainerStyle = computed(() => {
       v-if="element.componentKey === 'DButton'"
       class="dcomponent-root"
       :class="[element.id, element.componentClass?.trim()].filter(Boolean)"
+      :style="dcomponentTypographyStyle"
+      :surface-background="cssBackgroundFill(element)"
+    />
+    <DInput
+      v-else-if="element.componentKey === 'DInput'"
+      class="dcomponent-root"
+      :class="[element.id, element.componentClass?.trim()].filter(Boolean)"
+      :style="dcomponentTypographyStyle"
       :surface-background="cssBackgroundFill(element)"
     />
   </div>
@@ -600,7 +665,9 @@ const childContainerStyle = computed(() => {
     :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
   >
-    <span v-if="labelText" class="element-label">{{ labelText }}</span>
+    <span v-if="labelText" class="element-label">
+      <span class="element-label-inner">{{ labelText }}</span>
+    </span>
 
     <div v-if="children.length" class="children-layer" :style="childContainerStyle">
       <DesignTreeNode
@@ -655,10 +722,23 @@ const childContainerStyle = computed(() => {
 .element-label {
   position: relative;
   z-index: 2;
-  text-align: center;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   word-break: break-word;
   padding: 2px 4px;
   pointer-events: none;
+  text-align: inherit;
+  display: flex;
+  align-items: center;
+}
+
+.element-label-inner {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  text-align: inherit;
 }
 
 .children-layer {

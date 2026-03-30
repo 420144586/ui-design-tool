@@ -8,19 +8,26 @@ const props = withDefaults(
     max?: number
     /** 附加到 input 的 class，如 angle-input */
     inputClass?: string
+    /**
+     * 属性面板当前编辑的设计元素 id；失焦提交时一并传出，避免先切换选中后 blur 把值写到错元素上
+     */
+    ownerElementId?: string | null
   }>(),
   {
     min: undefined,
     max: undefined,
-    inputClass: ''
+    inputClass: '',
+    ownerElementId: null
   }
 )
 
 const emit = defineEmits<{
-  'update:modelValue': [value: number]
+  'update:modelValue': [value: number, ownerElementId?: string]
 }>()
 
 const focused = ref(false)
+/** 聚焦时记录的设计元素 id，blur 时提交用（切换选中后 props.ownerElementId 已变） */
+const ownerWhileFocused = ref<string | null>(null)
 /** 聚焦或输入过程中的字符串，避免受控 number 在空串/小数点时被旧值顶回 */
 const draft = ref('')
 
@@ -47,8 +54,17 @@ function clamp(n: number): number {
   return x
 }
 
+function ownerForCommit(): string | undefined {
+  return ownerWhileFocused.value ?? props.ownerElementId ?? undefined
+}
+
+function emitValue(n: number): void {
+  emit('update:modelValue', n, ownerForCommit())
+}
+
 function onFocus(): void {
   focused.value = true
+  ownerWhileFocused.value = props.ownerElementId ? String(props.ownerElementId) : null
   draft.value = Number.isFinite(props.modelValue) ? String(props.modelValue) : ''
 }
 
@@ -59,17 +75,19 @@ function onInput(e: Event): void {
   if (raw === '' || raw === '-' || raw === '.' || raw === '-.') return
   const n = Number(raw)
   if (!Number.isFinite(n)) return
-  emit('update:modelValue', clamp(n))
+  emitValue(clamp(n))
 }
 
 function onBlur(): void {
+  const commitOwner = ownerWhileFocused.value ?? props.ownerElementId ?? undefined
+  ownerWhileFocused.value = null
   focused.value = false
   const n = Number(draft.value)
   if (draft.value === '' || !Number.isFinite(n)) {
     draft.value = Number.isFinite(props.modelValue) ? String(props.modelValue) : ''
     return
   }
-  emit('update:modelValue', clamp(n))
+  emit('update:modelValue', clamp(n), commitOwner)
   draft.value = Number.isFinite(props.modelValue) ? String(props.modelValue) : ''
 }
 </script>

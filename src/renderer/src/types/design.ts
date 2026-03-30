@@ -83,11 +83,25 @@ export interface DesignElement {
   tableCols?: number
   /** 表格单元格边框颜色 */
   borderColor?: string
+  /** 为 true 时显示列/行分割线并可拖拽调整单元格尺寸；否则仅可拖拽移动整张表 */
+  tableResizeEnabled?: boolean
+  /** tr:nth-child(odd) 行背景 */
+  tableTrOddBgEnabled?: boolean
+  tableTrOddBg?: string
+  /** tr:nth-child(even) 行背景 */
+  tableTrEvenBgEnabled?: boolean
+  tableTrEvenBg?: string
+  /** td:nth-child(odd) 列背景（每行内第 1、3、5… 列） */
+  tableTdOddBgEnabled?: boolean
+  tableTdOddBg?: string
+  /** td:nth-child(even) 列背景 */
+  tableTdEvenBgEnabled?: boolean
+  tableTdEvenBg?: string
   /** 表格单元格占位节点（设计数据），导出 HTML 时不单独生成该节点 */
   isTableCell?: boolean
   tableCellRow?: number
   tableCellCol?: number
-  /** 封装组件标识，如 DButton */
+  /** 封装组件标识，如 DButton、DInput */
   componentKey?: string
   /** 追加到封装组件根节点上的 class，用于覆盖组件默认样式（空格分隔） */
   componentClass?: string
@@ -106,7 +120,7 @@ export interface DesignElement {
   /** 字体粗细 */
   fontWeight?: string
   /** 文本对齐 */
-  textAlign?: 'left' | 'center' | 'right'
+  textAlign?: 'left' | 'center' | 'right' | 'justify'
   /** 圆角 */
   borderRadius?: number
   /** 盒模型：border-box 时边框计入宽高，不易撑出父容器；未设置时设计器按 border-box 渲染 */

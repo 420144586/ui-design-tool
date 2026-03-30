@@ -4,6 +4,7 @@ import { defineComponent, h, onMounted, onUnmounted, reactive, ref } from 'vue'
 import * as Vue from 'vue'
 import type { Component } from 'vue'
 import DButton from '@renderer/D-components/DButton.vue'
+import DInput from '@renderer/D-components/DInput.vue'
 
 function shortScopeHash(source: string): string {
   let x = 0
@@ -18,7 +19,7 @@ function shortScopeHash(source: string): string {
  *
  * - 模板通过 @vue/compiler-dom 的 mode:'function' 编译，再用 new Function 求值
  * - scoped 样式通过 @vue/compiler-sfc 编译后注入 <head>
- * - 自动注册 DButton 等已知自定义组件
+ * - 自动注册 DButton、DInput 等已知自定义组件
  * - 从模板中检测 animShow 引用，创建默认 reactive 状态（全部为 true）
  * - 从 script 中解析简单 ref() 声明并提供默认值
  */
@@ -90,7 +91,7 @@ export function createPreviewComponentFromSfc(source: string): Component {
 
   return defineComponent({
     name: 'GeneratedPreview',
-    components: { DButton },
+    components: { DButton, DInput },
     setup() {
       const styleEls: HTMLStyleElement[] = []
       onMounted(() => {

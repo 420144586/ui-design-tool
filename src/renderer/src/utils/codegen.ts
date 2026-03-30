@@ -18,6 +18,30 @@ import { flexContainerCssLines } from '@renderer/utils/elementFlex'
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
 
+/** 表格 tr/td :nth-child(odd|even) 条纹背景（导出与属性面板 CSS） */
+export const tableStripingCss = (element: DesignElement): string => {
+  if (element.kind !== 'table') return ''
+  const id = element.id
+  const parts: string[] = []
+  if (element.tableTrOddBgEnabled) {
+    const bg = element.tableTrOddBg?.trim() || '#e8eef5'
+    parts.push(`.${id} tr:nth-child(odd) {\n  background: ${bg};\n}`)
+  }
+  if (element.tableTrEvenBgEnabled) {
+    const bg = element.tableTrEvenBg?.trim() || '#ffffff'
+    parts.push(`.${id} tr:nth-child(even) {\n  background: ${bg};\n}`)
+  }
+  if (element.tableTdOddBgEnabled) {
+    const bg = element.tableTdOddBg?.trim() || '#e8eef5'
+    parts.push(`.${id} td:nth-child(odd) {\n  background: ${bg};\n}`)
+  }
+  if (element.tableTdEvenBgEnabled) {
+    const bg = element.tableTdEvenBg?.trim() || '#ffffff'
+    parts.push(`.${id} td:nth-child(even) {\n  background: ${bg};\n}`)
+  }
+  return parts.length ? `${parts.join('\n')}\n` : ''
+}
+
 const indent = (level: number): string => '  '.repeat(level)
 
 const escapeHtml = (s: string): string =>
@@ -29,6 +53,14 @@ const escapeHtml = (s: string): string =>
 
 const elementHasChildren = (elements: DesignElement[], id: string): boolean =>
   elements.some((item) => item.parentId === id)
+
+/** 与 text-align 一致：flex 叶子容器上调整主轴，避免 justify-content:center 抵消对齐 */
+const flexJustifyFromTextAlign = (ta: DesignElement['textAlign'] | undefined): string => {
+  const v = ta ?? 'center'
+  if (v === 'left' || v === 'justify') return 'flex-start'
+  if (v === 'right') return 'flex-end'
+  return 'center'
+}
 
 const buildTemplateTree = (
   elements: DesignElement[],
@@ -104,6 +136,14 @@ const buildTemplateTree = (
         const cls = extra ? `${node.id} ${extra}` : node.id
         const block = [`${indent(level)}<DButton class="${cls}" />`]
         lines.push(...wrapTemplateLinesWithTransition(block, node, level))
+      } else if (key === 'DInput') {
+        const extra = (node.componentClass ?? '')
+          .trim()
+          .replace(/[^\w\s-]/g, '')
+          .trim()
+        const cls = extra ? `${node.id} ${extra}` : node.id
+        const block = [`${indent(level)}<DInput class="${cls}" />`]
+        lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       }
       return
     }
@@ -111,16 +151,19 @@ const buildTemplateTree = (
     const children = buildTemplateTree(elements, node.id, level + 1)
     const label = node.text.trim()
     if (children.length === 0) {
-      const block = [
-        `${indent(level)}<div class="${node.id}">${label ? escapeHtml(label) : ''}</div>`
-      ]
+      const inner = label
+        ? `<span class="${node.id}-text">${escapeHtml(label)}</span>`
+        : ''
+      const block = [`${indent(level)}<div class="${node.id}">${inner}</div>`]
       lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       return
     }
     const block: string[] = []
     block.push(`${indent(level)}<div class="${node.id}">`)
     if (label) {
-      block.push(`${indent(level + 1)}<span class="${node.id}-label">${escapeHtml(label)}</span>`)
+      block.push(
+        `${indent(level + 1)}<span class="${node.id}-label"><span class="${node.id}-label-inner">${escapeHtml(label)}</span></span>`
+      )
     }
     block.push(...children)
     block.push(`${indent(level)}</div>`)
@@ -146,6 +189,9 @@ const collectDComponentImports = (elements: DesignElement[]): string[] => {
   )
   if (keys.has('DButton')) {
     lines.push(`import DButton from '@renderer/D-components/DButton.vue'`)
+  }
+  if (keys.has('DInput')) {
+    lines.push(`import DInput from '@renderer/D-components/DInput.vue'`)
   }
   return lines
 }
@@ -187,6 +233,14 @@ export function generateStyleBlockForElement(
   const relativeX = parent ? element.x - parent.x : element.x
   const relativeY = parent ? element.y - parent.y : element.y
   const hasChildren = elementHasChildren(elements, element.id)
+  const leafTextInnerRule =
+    !hasChildren &&
+    element.text.trim() &&
+    element.kind !== 'image' &&
+    element.kind !== 'table' &&
+    element.kind !== 'dcomponent'
+      ? `\n.${element.id}-text {\n  display: block;\n  width: 100%;\n  min-width: 0;\n}`
+      : ''
   const boxPx = resolveElementLayoutPxBox(element, elements, canvas)
   const wh = cssWidthHeightStrings(element)
   const gridPlacementModel = { ...element, width: boxPx.width, height: boxPx.height }
@@ -203,7 +257,7 @@ export function generateStyleBlockForElement(
   if (element.color) commonStyles.push(`  color: ${element.color};`)
   if (element.fontSize) commonStyles.push(`  font-size: ${element.fontSize}px;`)
   if (element.fontWeight) commonStyles.push(`  font-weight: ${element.fontWeight};`)
-  if (element.textAlign) commonStyles.push(`  text-align: ${element.textAlign};`)
+  commonStyles.push(`  text-align: ${element.textAlign ?? 'center'};`)
   if (element.borderRadius) commonStyles.push(`  border-radius: ${element.borderRadius}px;`)
   commonStyles.push(...boxBorderCssLines(element))
   commonStyles.push(
@@ -357,7 +411,8 @@ export function generateStyleBlockForElement(
         '  position: relative;',
         '  vertical-align: top;',
         '}',
-        cellRules
+        cellRules,
+        tableStripingCss(element)
       ]
         .filter(Boolean)
         .join('\n')
@@ -380,7 +435,8 @@ export function generateStyleBlockForElement(
       '  position: relative;',
       '  vertical-align: top;',
       '}',
-      cellRules
+      cellRules,
+      tableStripingCss(element)
     ]
       .filter(Boolean)
       .join('\n')
@@ -416,7 +472,7 @@ export function generateStyleBlockForElement(
       `  opacity: ${element.opacity};`,
       '  display: flex;',
       '  align-items: center;',
-      '  justify-content: center;',
+      `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`,
       ...commonStyles,
       '}'
     ].join('\n')
@@ -435,17 +491,23 @@ export function generateStyleBlockForElement(
   ) {
     const bg =
       element.kind === 'dcomponent' ? 'transparent' : cssBackgroundFill(element)
-    return [
-      `.${element.id} {`,
-      '  position: relative;',
-      '  flex-shrink: 0;',
-      `  width: ${wh.width};`,
-      `  height: ${wh.height};`,
-      `  background: ${bg};`,
-      `  opacity: ${element.opacity};`,
-      ...commonStyles,
-      '}'
-    ].join('\n')
+    const selfFlex = element.flexLayoutEnabled
+      ? [...flexContainerCssLines(element), '  overflow: hidden;']
+      : []
+    return (
+      [
+        `.${element.id} {`,
+        '  position: relative;',
+        '  flex-shrink: 0;',
+        `  width: ${wh.width};`,
+        `  height: ${wh.height};`,
+        `  background: ${bg};`,
+        `  opacity: ${element.opacity};`,
+        ...selfFlex,
+        ...commonStyles,
+        '}'
+      ].join('\n') + leafTextInnerRule
+    )
   }
 
   if (
@@ -453,6 +515,13 @@ export function generateStyleBlockForElement(
     (element.kind === 'div' || element.kind === 'column') &&
     !parentFlex
   ) {
+    const colSlotFlex = element.flexLayoutEnabled
+      ? [...flexContainerCssLines(element), '  overflow: hidden;']
+      : [
+            '  display: flex;',
+            '  align-items: center;',
+            `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`
+          ]
     return [
       `.${element.id} {`,
       '  position: relative;',
@@ -461,17 +530,22 @@ export function generateStyleBlockForElement(
       '  width: 100%;',
       `  background: ${cssBackgroundFill(element)};`,
       `  opacity: ${element.opacity};`,
-      '  display: flex;',
-      '  align-items: center;',
-      '  justify-content: center;',
+      ...colSlotFlex,
       ...commonStyles,
       '}'
-    ].join('\n')
+    ].join('\n') + leafTextInnerRule
   }
 
   if (layoutMode === 'grid') {
     const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
     if (!hasChildren) {
+      const noChildLayout = element.flexLayoutEnabled
+        ? [...flexContainerCssLines(element), '  overflow: hidden;']
+        : [
+            '  display: flex;',
+            '  align-items: center;',
+            `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`
+          ]
       return [
         `.${element.id} {`,
         `  grid-column: ${gp.gridColumn};`,
@@ -482,12 +556,10 @@ export function generateStyleBlockForElement(
         `  background: ${cssBackgroundFill(element)};`,
         `  opacity: ${element.opacity};`,
         '  position: relative;',
-        '  display: flex;',
-        '  align-items: center;',
-        '  justify-content: center;',
+        ...noChildLayout,
         ...commonStyles,
         '}'
-      ].join('\n')
+      ].join('\n') + leafTextInnerRule
     }
     if (element.kind === 'column' && hasChildren) {
       const colInner = element.flexLayoutEnabled
@@ -589,30 +661,36 @@ export function generateStyleBlockForElement(
     ].join('\n')
   }
 
-  const flexParentAbs =
-    hasChildren && element.flexLayoutEnabled
-      ? [...flexContainerCssLines(element), '  overflow: hidden;']
-      : []
-  const leafOnlyCenter: string[] = !hasChildren
-    ? ['  display: flex;', '  align-items: center;', '  justify-content: center;']
+  const flexParentAbs = element.flexLayoutEnabled
+    ? [...flexContainerCssLines(element), '  overflow: hidden;']
     : []
+  const leafOnlyCenter: string[] =
+    !hasChildren && !element.flexLayoutEnabled
+      ? [
+          '  display: flex;',
+          '  align-items: center;',
+          `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`
+        ]
+      : []
 
-  return [
-    `.${element.id} {`,
-    '  position: absolute;',
-    `  z-index: ${element.serial};`,
-    ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
-    `  width: ${wh.width};`,
-    `  height: ${wh.height};`,
-    `  background: ${cssBackgroundFill(element)};`,
-    `  opacity: ${element.opacity};`,
-    ...flexParentAbs,
-    ...leafOnlyCenter,
-    ...commonStyles,
-    '}'
-  ]
-    .filter((line) => line !== '')
-    .join('\n')
+  return (
+    [
+      `.${element.id} {`,
+      '  position: absolute;',
+      `  z-index: ${element.serial};`,
+      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `  width: ${wh.width};`,
+      `  height: ${wh.height};`,
+      `  background: ${cssBackgroundFill(element)};`,
+      `  opacity: ${element.opacity};`,
+      ...flexParentAbs,
+      ...leafOnlyCenter,
+      ...commonStyles,
+      '}'
+    ]
+      .filter((line) => line !== '')
+      .join('\n') + leafTextInnerRule
+  )
 }
 
 export const generateStyleCode = (
@@ -626,19 +704,28 @@ export const generateStyleCode = (
 
   const overlayLabelStyles = sortByLayer(elements)
     .filter((el) => el.text.trim() && elementHasChildren(elements, el.id))
-    .map((el) =>
+    .flatMap((el) => [
       [
         `.${el.id}-label {`,
         '  position: absolute;',
         '  inset: 0;',
         '  display: flex;',
         '  align-items: center;',
-        '  justify-content: center;',
+        `  justify-content: ${flexJustifyFromTextAlign(el.textAlign)};`,
+        `  text-align: ${el.textAlign ?? 'center'};`,
         '  pointer-events: none;',
         '  z-index: 1;',
         '}'
+      ].join('\n'),
+      [
+        `.${el.id}-label-inner {`,
+        '  display: block;',
+        '  width: 100%;',
+        '  min-width: 0;',
+        '  box-sizing: border-box;',
+        '}'
       ].join('\n')
-    )
+    ])
 
   const animationStyles = elements
     .map((el) => generateAnimationStyleBlockForElement(el))
@@ -675,6 +762,13 @@ const DBUTTON_CSS = `:where(.d-button) {
 .d-button.d-button--pill { border-radius: 999px; }
 .d-button.d-button--compact { padding: 4px 10px; font-size: 12px; }`
 
+const DINPUT_CSS = `:where(.d-input) {
+  display: block; width: 100%; height: 100%; box-sizing: border-box; margin: 0;
+  padding: 0 14px; border-radius: 2px; border: 1.5px solid #becad6; background: #fff;
+  color: #39434e; font-size: 22px; outline: none;
+}
+:where(.d-input)::placeholder { color: #818f9b; opacity: 1; }`
+
 export const generatePreviewHtml = (
   elements: DesignElement[],
   layoutMode: LayoutMode,
@@ -691,6 +785,8 @@ export const generatePreviewHtml = (
     .replace(/\s+appear(?=[\s>\/])/g, '')
     .replace(/<DButton\s+class="([^"]*)"[^/]*\/>/g, '<button type="button" class="d-button $1">按钮</button>')
     .replace(/<DButton[^/]*\/>/g, '<button type="button" class="d-button">按钮</button>')
+    .replace(/<DInput\s+class="([^"]*)"[^/]*\/>/g, '<input type="text" class="d-input $1" placeholder="" />')
+    .replace(/<DInput[^/]*\/>/g, '<input type="text" class="d-input" placeholder="" />')
 
   const css = generateStyleCode(elements, layoutMode, canvas)
 
@@ -701,6 +797,8 @@ export const generatePreviewHtml = (
     'html, body { margin: 0; padding: 0; }',
     css,
     DBUTTON_CSS,
+    '\n',
+    DINPUT_CSS,
     '</style>',
     '</head><body>',
     html,

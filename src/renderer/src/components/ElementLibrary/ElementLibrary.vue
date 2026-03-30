@@ -86,6 +86,17 @@ const componentPresets = ref<ElementPreset[]>([
     text: '',
     opacity: 1,
     componentKey: 'DButton'
+  },
+  {
+    kind: 'dcomponent',
+    type: 'div',
+    name: 'DInput',
+    width: 300,
+    height: 50,
+    background: '#ffffff',
+    text: '',
+    opacity: 1,
+    componentKey: 'DInput'
   }
 ])
 

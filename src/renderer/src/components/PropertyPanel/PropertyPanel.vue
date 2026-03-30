@@ -10,6 +10,7 @@ import {
 } from '@renderer/utils/animationCodegen'
 import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { generateStyleBlockForElement } from '@renderer/utils/codegen'
+import { flexContainerCssLines } from '@renderer/utils/elementFlex'
 import type {
   AlignContent,
   AlignItems,
@@ -23,6 +24,8 @@ import type {
 const store = useDesignStore()
 
 const panelTab = ref<'property' | 'css' | 'animation'>('property')
+/** 表格条纹设置：tr / td */
+const tableStripeSubPanel = ref<'tr' | 'td'>('tr')
 
 const selected = computed(() => store.selectedElement)
 
@@ -43,6 +46,13 @@ const selectedCssCode = computed(() => {
   )
   const anim = generateAnimationStyleBlockForElement(el)
   return [base, anim].filter(Boolean).join('\n\n')
+})
+
+/** 与导出 generateStyleBlock 中 flex 段一致，供属性区直观对照 */
+const flexLayoutCssPreview = computed(() => {
+  const el = selected.value
+  if (!el?.flexLayoutEnabled) return ''
+  return [...flexContainerCssLines(el), '  overflow: hidden;'].join('\n')
 })
 
 const animationEnabled = computed({
@@ -78,9 +88,14 @@ const timingModeHint = computed(() => {
   return ANIMATION_TIMING_OPTIONS.find((o) => o.value === m)?.hint ?? ''
 })
 
-const update = <K extends keyof DesignElement>(key: K, value: DesignElement[K]): void => {
-  if (!selected.value) return
-  store.updateElement(selected.value.id, { [key]: value } as Partial<DesignElement>)
+const update = <K extends keyof DesignElement>(
+  key: K,
+  value: DesignElement[K],
+  ownerElementId?: string
+): void => {
+  const id = ownerElementId ?? selected.value?.id
+  if (!id) return
+  store.updateElement(id, { [key]: value } as Partial<DesignElement>)
 }
 
 const isColumnContainer = computed(
@@ -126,19 +141,56 @@ const onFlexLayoutToggle = (e: Event): void => {
     store.updateElement(s.id, { flexLayoutEnabled: false })
   }
 }
-const dButtonHint =
-  '每个实例根节点会带唯一 class（与元素 id 相同，如 el-xxx），可写 .el-xxx { … } 只影响当前按钮。修饰示例：d-button--ghost d-button--danger（空格分隔）'
+/** 字体颜色预设（下拉快速选择，可与下方自定义色并用） */
+const TEXT_COLOR_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '#f1f4fb', label: '浅灰白' },
+  { value: '#ffffff', label: '白色' },
+  { value: '#d7deec', label: '浅蓝灰' },
+  { value: '#818f9b', label: '灰蓝' },
+  { value: '#39434e', label: '炭灰' },
+  { value: '#1a1f2b', label: '深色' },
+  { value: '#000000', label: '黑色' },
+  { value: '#4f7cff', label: '品牌蓝' },
+  { value: '#39b56a', label: '绿色' },
+  { value: '#e05555', label: '红色' },
+  { value: '#ff8f3e', label: '橙色' },
+  { value: '#7b5cff', label: '紫色' }
+]
 
-const setColumnChildCount = (raw: number): void => {
-  if (!selected.value || selected.value.kind !== 'column') return
-  if (!Number.isFinite(raw)) return
-  store.updateColumnChildCount(selected.value.id, raw)
+const textColorPresetSelectValue = computed(() => {
+  const raw = (selected.value?.color ?? '#f1f4fb').trim().toLowerCase()
+  const hit = TEXT_COLOR_PRESETS.find((p) => p.value.toLowerCase() === raw)
+  return hit ? hit.value : '__custom__'
+})
+
+const onTextColorPresetChange = (e: Event): void => {
+  const v = (e.target as HTMLSelectElement).value
+  if (v === '__custom__') return
+  update('color', v)
 }
 
-const setImageGap = (raw: number): void => {
-  if (!selected.value || selected.value.kind !== 'image' || selected.value.type !== 'div') return
-  if (!Number.isFinite(raw)) return
-  store.updateElement(selected.value.id, { gap: Math.max(0, Math.floor(raw)) })
+const dComponentClassHint = computed(() => {
+  const key = selected.value?.componentKey
+  if (key === 'DInput') {
+    return '每个实例根节点会带唯一 class（与元素 id 相同，如 el-xxx），可写 .el-xxx { … } 覆盖当前输入框。默认样式类名为 d-input。'
+  }
+  return '每个实例根节点会带唯一 class（与元素 id 相同，如 el-xxx），可写 .el-xxx { … } 只影响当前按钮。修饰示例：d-button--ghost d-button--danger（空格分隔）'
+})
+
+const setColumnChildCount = (raw: number, ownerId?: string): void => {
+  const id = ownerId ?? selected.value?.id
+  if (!id || !Number.isFinite(raw)) return
+  const el = store.elements.find((e) => e.id === id)
+  if (!el || el.kind !== 'column') return
+  store.updateColumnChildCount(id, raw)
+}
+
+const setImageGap = (raw: number, ownerId?: string): void => {
+  const id = ownerId ?? selected.value?.id
+  if (!id || !Number.isFinite(raw)) return
+  const el = store.elements.find((e) => e.id === id)
+  if (!el || el.kind !== 'image' || el.type !== 'div') return
+  store.updateElement(id, { gap: Math.max(0, Math.floor(raw)) })
 }
 
 const setImageHasLabel = (checked: boolean): void => {
@@ -203,19 +255,21 @@ const gradientType = computed({
   }
 })
 
-const gradientAngle = computed({
-  get: () => selected.value?.gradientAngle ?? 90,
-  set: (val: number) => {
-    if (!selected.value) return
-    const colors = selected.value.gradientColors || ['#ff0000', '#0000ff']
-    const type = selected.value.gradientType || 'linear'
-    store.updateElement(selected.value.id, {
-      backgroundTransparent: false,
-      gradientAngle: val,
-      background: generateGradientString(type, colors, val)
-    })
-  }
-})
+const gradientAngle = computed(() => selected.value?.gradientAngle ?? 90)
+
+const applyGradientAngle = (val: number, ownerId?: string): void => {
+  const id = ownerId ?? selected.value?.id
+  if (!id) return
+  const el = store.elements.find((e) => e.id === id)
+  if (!el) return
+  const colors = el.gradientColors || ['#ff0000', '#0000ff']
+  const type = el.gradientType || 'linear'
+  store.updateElement(id, {
+    backgroundTransparent: false,
+    gradientAngle: val,
+    background: generateGradientString(type, colors, val)
+  })
+}
 
 const gradientColors = computed(() => selected.value?.gradientColors || ['#ff0000', '#0000ff'])
 
@@ -340,23 +394,24 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
           </p>
         </div>
         <template v-else-if="selected">
-      <label v-if="!isDComponent">
-        文本
-        <input
-          :value="selected.text"
-          @input="update('text', ($event.target as HTMLInputElement).value)"
-        />
-      </label>
       <div class="style-group">
         <div class="group-title">排版与尺寸</div>
         <div class="row-inputs">
           <label class="half">
             X
-            <NumericInput :model-value="selected.x" @update:model-value="update('x', $event)" />
+            <NumericInput
+              :model-value="selected.x"
+              :owner-element-id="selected.id"
+              @update:model-value="(v, oid) => update('x', v, oid)"
+            />
           </label>
           <label class="half">
             Y
-            <NumericInput :model-value="selected.y" @update:model-value="update('y', $event)" />
+            <NumericInput
+              :model-value="selected.y"
+              :owner-element-id="selected.id"
+              @update:model-value="(v, oid) => update('y', v, oid)"
+            />
           </label>
         </div>
         <div class="row-inputs row-dimensions">
@@ -365,9 +420,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             <div class="dim-input-with-pct">
               <NumericInput
                 :model-value="selected.width"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="selected.widthIsPercent ? 10000 : 16000"
-                @update:model-value="update('width', $event)"
+                @update:model-value="(v, oid) => update('width', v, oid)"
               />
               <label class="pct-toggle" title="勾选后以百分比为单位（相对父内容宽度；根级相对设计表面宽度）">
                 <input
@@ -384,9 +440,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             <div class="dim-input-with-pct">
               <NumericInput
                 :model-value="selected.height"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="selected.heightIsPercent ? 10000 : 16000"
-                @update:model-value="update('height', $event)"
+                @update:model-value="(v, oid) => update('height', v, oid)"
               />
               <label class="pct-toggle" title="勾选后以百分比为单位（相对父内容高度；根级相对设计表面高度）">
                 <input
@@ -503,45 +560,91 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               gap（px）
               <NumericInput
                 :model-value="selected.flexGap ?? 0"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="400"
-                @update:model-value="update('flexGap', $event)"
+                @update:model-value="(v, oid) => update('flexGap', v, oid)"
               />
             </label>
+          </div>
+          <div class="flex-css-preview-block">
+            <p class="flex-css-preview-title">该元素将写入的 flex 相关 CSS（默认与上方选项一致）</p>
+            <pre class="flex-css-preview">{{ flexLayoutCssPreview }}</pre>
           </div>
         </template>
       </div>
 
-      <div class="style-group" v-if="!isDComponent && !isImageStandalone">
-        <div class="group-title">文本样式</div>
+      <div class="style-group" v-if="!isImageStandalone">
+        <div class="group-title">文本与排版</div>
+        <label v-if="!isDComponent">
+          文本内容
+          <input
+            :value="selected.text"
+            @input="update('text', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label>
+          文字对齐
+          <select
+            :value="selected.textAlign ?? 'center'"
+            @change="
+              update(
+                'textAlign',
+                ($event.target as HTMLSelectElement).value as DesignElement['textAlign']
+              )
+            "
+            class="common-select"
+          >
+            <option value="left">左对齐</option>
+            <option value="center">居中</option>
+            <option value="right">右对齐</option>
+            <option value="justify">两端对齐</option>
+          </select>
+        </label>
+        <label>
+          字体颜色（预设）
+          <select
+            class="common-select"
+            :value="textColorPresetSelectValue"
+            @change="onTextColorPresetChange"
+          >
+            <option
+              v-for="p in TEXT_COLOR_PRESETS"
+              :key="p.value"
+              :value="p.value"
+            >
+              {{ p.label }}（{{ p.value }}）
+            </option>
+            <option value="__custom__">自定义（使用下方色值）</option>
+          </select>
+        </label>
+        <label>
+          字体颜色（自定义）
+          <div class="color-row">
+            <input
+              type="color"
+              :value="selected.color ?? '#f1f4fb'"
+              @input="update('color', ($event.target as HTMLInputElement).value)"
+              class="color-picker"
+            />
+            <input
+              type="text"
+              :value="selected.color ?? '#f1f4fb'"
+              @input="update('color', ($event.target as HTMLInputElement).value)"
+              class="color-input"
+            />
+          </div>
+        </label>
         <div class="row-inputs">
           <label class="half">
             字体大小
             <NumericInput
               :model-value="selected.fontSize ?? 12"
+              :owner-element-id="selected.id"
               :min="1"
-              @update:model-value="update('fontSize', $event)"
+              @update:model-value="(v, oid) => update('fontSize', v, oid)"
             />
           </label>
-          <label class="half">
-            字体颜色
-            <div class="color-row">
-              <input
-                type="color"
-                :value="selected.color ?? '#f1f4fb'"
-                @input="update('color', ($event.target as HTMLInputElement).value)"
-                class="color-picker"
-              />
-              <input
-                type="text"
-                :value="selected.color ?? '#f1f4fb'"
-                @input="update('color', ($event.target as HTMLInputElement).value)"
-                class="color-input"
-              />
-            </div>
-          </label>
-        </div>
-        <div class="row-inputs">
           <label class="half">
             字体粗细
             <select
@@ -562,18 +665,6 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               <option value="900">900</option>
             </select>
           </label>
-          <label class="half">
-            对齐方式
-            <select
-              :value="selected.textAlign ?? 'center'"
-              @change="update('textAlign', ($event.target as HTMLSelectElement).value as any)"
-              class="common-select"
-            >
-              <option value="left">左对齐</option>
-              <option value="center">居中</option>
-              <option value="right">右对齐</option>
-            </select>
-          </label>
         </div>
       </div>
 
@@ -583,17 +674,19 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
           透明度 (0-1)
           <NumericInput
             :model-value="selected.opacity ?? 1"
+            :owner-element-id="selected.id"
             :min="0"
             :max="1"
-            @update:model-value="update('opacity', $event)"
+            @update:model-value="(v, oid) => update('opacity', v, oid)"
           />
         </label>
         <label>
           圆角 (px)
           <NumericInput
             :model-value="selected.borderRadius ?? 0"
+            :owner-element-id="selected.id"
             :min="0"
-            @update:model-value="update('borderRadius', $event)"
+            @update:model-value="(v, oid) => update('borderRadius', v, oid)"
           />
         </label>
         <label>
@@ -630,8 +723,9 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             边框宽度
             <NumericInput
               :model-value="selected.borderWidth ?? 1"
+              :owner-element-id="selected.id"
               :min="0"
-              @update:model-value="update('borderWidth', $event)"
+              @update:model-value="(v, oid) => update('borderWidth', v, oid)"
             />
           </label>
           <label class="half">
@@ -701,9 +795,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.paddingTop ?? 0"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="800"
-                @update:model-value="update('paddingTop', $event)"
+                @update:model-value="(v, oid) => update('paddingTop', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -717,9 +812,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.paddingRight ?? 0"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="800"
-                @update:model-value="update('paddingRight', $event)"
+                @update:model-value="(v, oid) => update('paddingRight', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -733,9 +829,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.paddingBottom ?? 0"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="800"
-                @update:model-value="update('paddingBottom', $event)"
+                @update:model-value="(v, oid) => update('paddingBottom', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -749,9 +846,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.paddingLeft ?? 0"
+                :owner-element-id="selected.id"
                 :min="0"
                 :max="800"
-                @update:model-value="update('paddingLeft', $event)"
+                @update:model-value="(v, oid) => update('paddingLeft', v, oid)"
               />
             </div>
           </div>
@@ -768,9 +866,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.marginTop ?? 0"
+                :owner-element-id="selected.id"
                 :min="-400"
                 :max="800"
-                @update:model-value="update('marginTop', $event)"
+                @update:model-value="(v, oid) => update('marginTop', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -784,9 +883,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.marginRight ?? 0"
+                :owner-element-id="selected.id"
                 :min="-400"
                 :max="800"
-                @update:model-value="update('marginRight', $event)"
+                @update:model-value="(v, oid) => update('marginRight', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -800,9 +900,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.marginBottom ?? 0"
+                :owner-element-id="selected.id"
                 :min="-400"
                 :max="800"
-                @update:model-value="update('marginBottom', $event)"
+                @update:model-value="(v, oid) => update('marginBottom', v, oid)"
               />
             </div>
             <div class="spacing-cell">
@@ -816,9 +917,10 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
               </label>
               <NumericInput
                 :model-value="selected.marginLeft ?? 0"
+                :owner-element-id="selected.id"
                 :min="-400"
                 :max="800"
-                @update:model-value="update('marginLeft', $event)"
+                @update:model-value="(v, oid) => update('marginLeft', v, oid)"
               />
             </div>
           </div>
@@ -850,7 +952,8 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             <NumericInput
               :model-value="gradientAngle"
               input-class="angle-input"
-              @update:model-value="(v) => (gradientAngle = v)"
+              :owner-element-id="selected.id"
+              @update:model-value="applyGradientAngle"
             />
           </label>
           <div class="gradient-colors">
@@ -896,8 +999,9 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
         子元素数量
         <NumericInput
           :model-value="selected.childCount ?? 1"
+          :owner-element-id="selected.id"
           :min="1"
-          @update:model-value="setColumnChildCount($event)"
+          @update:model-value="(v, oid) => setColumnChildCount(v, oid)"
         />
       </label>
       <template v-if="isImageStandalone">
@@ -922,16 +1026,18 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
           行数
           <NumericInput
             :model-value="selected.tableRows ?? 5"
+            :owner-element-id="selected.id"
             :min="1"
-            @update:model-value="update('tableRows', Math.max(1, Math.floor($event)))"
+            @update:model-value="(v, oid) => update('tableRows', Math.max(1, Math.floor(v)), oid)"
           />
         </label>
         <label>
           列数
           <NumericInput
             :model-value="selected.tableCols ?? 5"
+            :owner-element-id="selected.id"
             :min="1"
-            @update:model-value="update('tableCols', Math.max(1, Math.floor($event)))"
+            @update:model-value="(v, oid) => update('tableCols', Math.max(1, Math.floor(v)), oid)"
           />
         </label>
         <label>
@@ -941,14 +1047,150 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             @input="update('borderColor', ($event.target as HTMLInputElement).value)"
           />
         </label>
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="!!selected.tableResizeEnabled"
+            @change="
+              update('tableResizeEnabled', ($event.target as HTMLInputElement).checked)
+            "
+          />
+          调整
+        </label>
+        <div class="table-stripe-panel">
+          <div class="table-stripe-subtabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              class="table-stripe-tab"
+              :aria-selected="tableStripeSubPanel === 'tr'"
+              :class="{ active: tableStripeSubPanel === 'tr' }"
+              @click="tableStripeSubPanel = 'tr'"
+            >
+              tr
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="table-stripe-tab"
+              :aria-selected="tableStripeSubPanel === 'td'"
+              :class="{ active: tableStripeSubPanel === 'td' }"
+              @click="tableStripeSubPanel = 'td'"
+            >
+              td
+            </button>
+          </div>
+          <div
+            v-show="tableStripeSubPanel === 'tr'"
+            class="table-stripe-section"
+            role="tabpanel"
+          >
+            <div class="group-title">行（tr:nth-child）</div>
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="!!selected.tableTrOddBgEnabled"
+                @change="
+                  update(
+                    'tableTrOddBgEnabled',
+                    ($event.target as HTMLInputElement).checked
+                  )
+                "
+              />
+              odd
+            </label>
+            <label v-if="selected.tableTrOddBgEnabled">
+              odd 背景色
+              <input
+                :value="selected.tableTrOddBg ?? '#e8eef5'"
+                @input="
+                  update('tableTrOddBg', ($event.target as HTMLInputElement).value)
+                "
+              />
+            </label>
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="!!selected.tableTrEvenBgEnabled"
+                @change="
+                  update(
+                    'tableTrEvenBgEnabled',
+                    ($event.target as HTMLInputElement).checked
+                  )
+                "
+              />
+              even
+            </label>
+            <label v-if="selected.tableTrEvenBgEnabled">
+              even 背景色
+              <input
+                :value="selected.tableTrEvenBg ?? '#ffffff'"
+                @input="
+                  update('tableTrEvenBg', ($event.target as HTMLInputElement).value)
+                "
+              />
+            </label>
+          </div>
+          <div
+            v-show="tableStripeSubPanel === 'td'"
+            class="table-stripe-section"
+            role="tabpanel"
+          >
+            <div class="group-title">列（td:nth-child，每行内）</div>
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="!!selected.tableTdOddBgEnabled"
+                @change="
+                  update(
+                    'tableTdOddBgEnabled',
+                    ($event.target as HTMLInputElement).checked
+                  )
+                "
+              />
+              odd
+            </label>
+            <label v-if="selected.tableTdOddBgEnabled">
+              odd 背景色
+              <input
+                :value="selected.tableTdOddBg ?? '#e8eef5'"
+                @input="
+                  update('tableTdOddBg', ($event.target as HTMLInputElement).value)
+                "
+              />
+            </label>
+            <label class="check">
+              <input
+                type="checkbox"
+                :checked="!!selected.tableTdEvenBgEnabled"
+                @change="
+                  update(
+                    'tableTdEvenBgEnabled',
+                    ($event.target as HTMLInputElement).checked
+                  )
+                "
+              />
+              even
+            </label>
+            <label v-if="selected.tableTdEvenBgEnabled">
+              even 背景色
+              <input
+                :value="selected.tableTdEvenBg ?? '#ffffff'"
+                @input="
+                  update('tableTdEvenBg', ($event.target as HTMLInputElement).value)
+                "
+              />
+            </label>
+          </div>
+        </div>
       </template>
       <template v-else-if="isDComponent">
         <label>
           组件样式 class
           <input
             :value="selected.componentClass ?? ''"
-            placeholder="例：d-button--ghost"
-            :title="dButtonHint"
+            :placeholder="selected.componentKey === 'DInput' ? '追加 class（空格分隔）' : '例：d-button--ghost'"
+            :title="dComponentClassHint"
             @input="
               update(
                 'componentClass',
@@ -957,7 +1199,7 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
             "
           />
         </label>
-        <p class="field-hint">{{ dButtonHint }}</p>
+        <p class="field-hint">{{ dComponentClassHint }}</p>
       </template>
       <template v-else-if="isImageContainer">
         <label class="check">
@@ -972,8 +1214,9 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
           元素间距 gap（px）
           <NumericInput
             :model-value="selected.gap ?? 10"
+            :owner-element-id="selected.id"
             :min="0"
-            @update:model-value="setImageGap($event)"
+            @update:model-value="(v, oid) => setImageGap(v, oid)"
           />
         </label>
         <label>
@@ -1064,8 +1307,9 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
                 时长 (ms)
                 <NumericInput
                   :model-value="selected.animationDurationMs ?? 400"
+                  :owner-element-id="selected.id"
                   :min="50"
-                  @update:model-value="update('animationDurationMs', Math.max(50, Math.floor($event)))"
+                  @update:model-value="(v, oid) => update('animationDurationMs', Math.max(50, Math.floor(v)), oid)"
                 />
               </label>
             </div>
@@ -1077,14 +1321,16 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
                   x1
                   <NumericInput
                     :model-value="selected.animationBezierX1 ?? 0.4"
-                    @update:model-value="update('animationBezierX1', $event)"
+                    :owner-element-id="selected.id"
+                    @update:model-value="(v, oid) => update('animationBezierX1', v, oid)"
                   />
                 </label>
                 <label class="half">
                   y1
                   <NumericInput
                     :model-value="selected.animationBezierY1 ?? 0"
-                    @update:model-value="update('animationBezierY1', $event)"
+                    :owner-element-id="selected.id"
+                    @update:model-value="(v, oid) => update('animationBezierY1', v, oid)"
                   />
                 </label>
               </div>
@@ -1093,14 +1339,16 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
                   x2
                   <NumericInput
                     :model-value="selected.animationBezierX2 ?? 0.2"
-                    @update:model-value="update('animationBezierX2', $event)"
+                    :owner-element-id="selected.id"
+                    @update:model-value="(v, oid) => update('animationBezierX2', v, oid)"
                   />
                 </label>
                 <label class="half">
                   y2
                   <NumericInput
                     :model-value="selected.animationBezierY2 ?? 1"
-                    @update:model-value="update('animationBezierY2', $event)"
+                    :owner-element-id="selected.id"
+                    @update:model-value="(v, oid) => update('animationBezierY2', v, oid)"
                   />
                 </label>
               </div>
@@ -1157,6 +1405,46 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
   margin-bottom: 12px;
   padding-left: 4px;
   border-left: 3px solid #4f7cff;
+}
+
+.table-stripe-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #2a2f3a;
+}
+
+.table-stripe-subtabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.table-stripe-tab {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid #3a4556;
+  background: #1e2430;
+  color: #9aa8bc;
+}
+
+.table-stripe-tab.active {
+  border-color: #4f7cff;
+  color: #e8eef5;
+  background: #252d3d;
+}
+
+.table-stripe-section .group-title {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 11px;
+  opacity: 0.95;
+}
+
+.table-stripe-section label:not(.check) {
+  margin-top: 6px;
 }
 
 .row-inputs {
@@ -1295,6 +1583,31 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
   gap: 4px;
   font-size: 11px;
   color: #8b96ac;
+}
+
+.flex-css-preview-block {
+  margin-top: 12px;
+}
+
+.flex-css-preview-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: #6d7a90;
+  line-height: 1.4;
+}
+
+.flex-css-preview {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.55;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  color: #b8c7e0;
+  background: #0d1118;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 .common-select {
