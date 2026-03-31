@@ -138,6 +138,7 @@ const patch = store.patchVirtualEnv
 .ve-panel {
   padding: 10px 12px;
   height: 100%;
+  min-height: 0;
   overflow: auto;
   box-sizing: border-box;
 }

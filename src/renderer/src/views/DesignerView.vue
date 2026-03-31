@@ -5,6 +5,7 @@ import { useDesignStore, newDesignProjectUuid } from '@renderer/store/design'
 import CodeView from '@renderer/components/CodeView/CodeView.vue'
 import DesignArea from '@renderer/components/DesignArea/DesignArea.vue'
 import ElementLibrary from '@renderer/components/ElementLibrary/ElementLibrary.vue'
+import StashPanel from '@renderer/components/StashPanel/StashPanel.vue'
 import VirtualEnvPanel from '@renderer/components/VirtualEnvPanel/VirtualEnvPanel.vue'
 import PropertyPanel from '@renderer/components/PropertyPanel/PropertyPanel.vue'
 import ColumnPresetSettings from '@renderer/components/ColumnPresetSettings/ColumnPresetSettings.vue'
@@ -575,8 +576,13 @@ onUnmounted(() => {
 
     <main class="main-layout">
       <aside class="left-panel">
-        <VirtualEnvPanel v-if="showVirtualEnvUi" />
-        <ElementLibrary v-else />
+        <div class="left-panel-stack">
+          <div class="left-panel-main">
+            <VirtualEnvPanel v-if="showVirtualEnvUi" />
+            <ElementLibrary v-else />
+          </div>
+          <StashPanel />
+        </div>
       </aside>
       <section class="center-panel">
         <div v-if="store.activeView === 'design'" class="design-stack">
@@ -895,6 +901,26 @@ select,
 .left-panel,
 .right-panel,
 .center-panel {
+  min-height: 0;
+}
+
+.left-panel-stack {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.left-panel-main {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.left-panel-main > * {
+  flex: 1 1 auto;
   min-height: 0;
 }
 

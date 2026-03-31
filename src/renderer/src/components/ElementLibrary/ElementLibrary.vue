@@ -64,10 +64,12 @@ const selectPreset = (item: ElementPreset): void => {
 <style scoped>
 .panel {
   height: 100%;
+  min-height: 0;
   padding: 12px;
   border-right: 1px solid #2a2f3a;
   background: #161a22;
   overflow: auto;
+  box-sizing: border-box;
 }
 
 h3 {

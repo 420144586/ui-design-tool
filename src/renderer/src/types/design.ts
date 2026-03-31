@@ -51,6 +51,16 @@ export interface CanvasConfig {
   zoom: number
 }
 
+/** 左侧「暂存区」单条：子树副本 + 独立预览 HTML（srcdoc） */
+export interface DesignStashEntry {
+  stashId: string
+  /** 暂存时的根节点 id（与 elements 内一致） */
+  rootId: string
+  rootName: string
+  elements: DesignElement[]
+  previewSrcdoc: string
+}
+
 export interface DesignElement {
   id: string
   /** 导出 HTML/CSS 使用的主 class（有意义、可改）；设计器 data-element-id 仍用 id */

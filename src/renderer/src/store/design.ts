@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type {
   CanvasConfig,
   DesignElement,
+  DesignStashEntry,
   DragPreview,
   ElementPreset,
   LayoutMode,
@@ -20,6 +21,13 @@ import {
   sortSiblingsForRenderOrder
 } from '@renderer/utils/elementFlex'
 import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
+import {
+  buildStashPreviewSrcdoc,
+  collectSubtreeIds,
+  extractSubtreeDeepCopy,
+  newStashId,
+  remapSubtreeIds
+} from '@renderer/utils/designStash'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const isInside = (
@@ -107,10 +115,15 @@ export function newDesignProjectUuid(): string {
 const cloneElementsPlain = (elements: DesignElement[]): DesignElement[] =>
   JSON.parse(JSON.stringify(elements)) as DesignElement[]
 
+const cloneStashPlain = (entries: DesignStashEntry[]): DesignStashEntry[] =>
+  JSON.parse(JSON.stringify(entries)) as DesignStashEntry[]
+
 export interface DesignHistorySnapshot {
   elements: DesignElement[]
   selectedElementIds: string[]
   nextSerial: number
+  /** 与快照同期的暂存区；旧快照无此字段时撤销不改动当前暂存 */
+  designStash?: DesignStashEntry[]
 }
 
 export const useDesignStore = defineStore('design', {
@@ -138,7 +151,11 @@ export const useDesignStore = defineStore('design', {
      * 设计项目会话（与组件树挂载无关，避免切换设计/代码视图或路由重建后丢失绑定）
      */
     designProjectId: newDesignProjectUuid(),
-    designProjectFilePath: null as string | null
+    designProjectFilePath: null as string | null,
+    /** 标准工作区暂存（与 standardElements 对应） */
+    designStashStandard: [] as DesignStashEntry[],
+    /** 虚拟环境工作区暂存 */
+    designStashVirtual: [] as DesignStashEntry[]
   }),
   getters: {
     /** 与单选兼容：取最后一次点击（多选时为主编辑项） */
@@ -201,6 +218,9 @@ export const useDesignStore = defineStore('design', {
     /**
      * Flex 模式下：选中唯一子项且父级为 flex 容器时，工具栏显示主轴方向交换按钮（←→ 或 ↑↓）。
      */
+    /** 当前工作区下的暂存区列表 */
+    designStash: (state): DesignStashEntry[] =>
+      state.workspaceMode === 'virtual-env' ? state.designStashVirtual : state.designStashStandard,
     flexSiblingReorderToolbar: (state): null | {
       axis: 'row' | 'column'
       canTowardStart: boolean
@@ -235,6 +255,13 @@ export const useDesignStore = defineStore('design', {
     _setActiveElements(next: DesignElement[]): void {
       if (this.workspaceMode === 'virtual-env') this.virtualElements = next
       else this.standardElements = next
+    },
+    _activeStash(): DesignStashEntry[] {
+      return this.workspaceMode === 'virtual-env' ? this.designStashVirtual : this.designStashStandard
+    },
+    _setActiveStash(next: DesignStashEntry[]): void {
+      if (this.workspaceMode === 'virtual-env') this.designStashVirtual = next
+      else this.designStashStandard = next
     },
     /** Flex 画布唯一根「画布容器」与设计表面同尺寸 */
     _syncFlexPageShellSize(): void {
@@ -307,6 +334,7 @@ export const useDesignStore = defineStore('design', {
       this.virtualElements = cloneElementsPlain(this.standardElements)
       this.virtualNextSerial = this.standardNextSerial
       this.virtualDesignHistoryPast = []
+      this.designStashVirtual = []
     },
     /**
      * 切换工作区：进入虚拟环境时从标准重新加载一份独立副本；标准数据不被虚拟编辑污染。
@@ -324,7 +352,8 @@ export const useDesignStore = defineStore('design', {
       const snap: DesignHistorySnapshot = {
         elements: cloneElementsPlain(this._activeElements()),
         selectedElementIds: [...this.selectedElementIds],
-        nextSerial: this.workspaceMode === 'virtual-env' ? this.virtualNextSerial : this.standardNextSerial
+        nextSerial: this.workspaceMode === 'virtual-env' ? this.virtualNextSerial : this.standardNextSerial,
+        designStash: cloneStashPlain(this._activeStash())
       }
       const past = this._activePast()
       past.push(snap)
@@ -353,6 +382,9 @@ export const useDesignStore = defineStore('design', {
         this.virtualNextSerial = snap.nextSerial
       } else {
         this.standardNextSerial = snap.nextSerial
+      }
+      if (snap.designStash !== undefined) {
+        this._setActiveStash(cloneStashPlain(snap.designStash))
       }
       this.historyMuted = false
     },
@@ -553,7 +585,8 @@ export const useDesignStore = defineStore('design', {
         const snap: DesignHistorySnapshot = {
           elements: cloneElementsPlain(this.standardElements),
           selectedElementIds: [...this.selectedElementIds],
-          nextSerial: this.standardNextSerial
+          nextSerial: this.standardNextSerial,
+          designStash: cloneStashPlain(this.designStashStandard)
         }
         this.standardDesignHistoryPast.push(snap)
         if (this.standardDesignHistoryPast.length > DESIGN_HISTORY_MAX) {
@@ -561,6 +594,7 @@ export const useDesignStore = defineStore('design', {
         }
       }
       this.standardElements = cloneElementsPlain(elements)
+      this.designStashStandard = []
       this.selectedElementIds = []
       const maxSerial = this.standardElements.reduce((max, item) => Math.max(max, item.serial), 0)
       this.standardNextSerial = maxSerial + 1
@@ -600,6 +634,8 @@ export const useDesignStore = defineStore('design', {
       this.activePreset = null
       this.activeView = 'design'
       this.dragPreview = { ...defaultPreview }
+      this.designStashStandard = []
+      this.designStashVirtual = []
       if (data.workspaceMode === 'virtual-env' || data.workspaceMode === 'standard') {
         this.workspaceMode = data.workspaceMode
       } else {
@@ -1390,6 +1426,89 @@ export const useDesignStore = defineStore('design', {
     },
     clearDragPreview(): void {
       this.dragPreview = { ...defaultPreview }
+    },
+    /**
+     * 将当前单选子树移入左侧暂存区（画布中移除，可撤销一步还原含暂存状态）。
+     */
+    stashSelectedSubtreeToPanel(): void {
+      if (this.selectedElementIds.length !== 1) return
+      const rootId = this.selectedElementIds[0]
+      const el = this._activeElements().find((e) => e.id === rootId)
+      if (!el) return
+      if (el.isFlexPageShell) return
+      const ids = collectSubtreeIds(this._activeElements(), rootId)
+      const subtree = extractSubtreeDeepCopy(this._activeElements(), rootId)
+      const preview = buildStashPreviewSrcdoc(
+        subtree,
+        rootId,
+        this.canvas.layoutMode,
+        this.canvas.gridSize
+      )
+      const parentId = el.parentId ?? null
+      this.pushDesignHistory()
+      this._setActiveElements(this._activeElements().filter((e) => !ids.has(e.id)))
+      this._activeStash().push({
+        stashId: newStashId(),
+        rootId: el.id,
+        rootName: el.name?.trim() || el.kind,
+        elements: subtree,
+        previewSrcdoc: preview
+      })
+      if (parentId && this._activeElements().some((e) => e.id === parentId)) {
+        this.selectedElementIds = [parentId]
+      } else {
+        this.selectedElementIds = []
+      }
+    },
+    removeDesignStashEntry(stashId: string): void {
+      const arr = this._activeStash()
+      const i = arr.findIndex((s) => s.stashId === stashId)
+      if (i < 0) return
+      this.pushDesignHistory()
+      arr.splice(i, 1)
+    },
+    /**
+     * 将暂存条目挂到当前单选父级下（重新生成 id），并从暂存列表移除。
+     */
+    restoreDesignStashToSelectedParent(stashId: string): void {
+      const arr = this._activeStash()
+      const idx = arr.findIndex((s) => s.stashId === stashId)
+      if (idx < 0) return
+      if (this.selectedElementIds.length !== 1) {
+        window.alert('请先在设计视图中选中要作为父容器的元素。')
+        return
+      }
+      const targetId = this.selectedElementIds[0]
+      const host = this._activeElements().find((e) => e.id === targetId)
+      if (!host || !canAddChildElements(host)) {
+        window.alert('当前选中元素不能挂载子节点（例如表格根或纯图片）。')
+        return
+      }
+      const entry = arr[idx]
+      const { elements: remapped, newRootId } = remapSubtreeIds(entry.elements, entry.rootId)
+      const root = remapped.find((e) => e.id === newRootId)
+      if (!root) return
+      const inset = 12
+      const dx = host.x + inset - root.x
+      const dy = host.y + inset - root.y
+      for (const e of remapped) {
+        e.x = Math.round(e.x + dx)
+        e.y = Math.round(e.y + dy)
+      }
+      root.parentId = targetId
+      let serial = this.nextSerial
+      for (const e of remapped) {
+        e.serial = serial++
+      }
+      if (this.workspaceMode === 'virtual-env') {
+        this.virtualNextSerial = serial
+      } else {
+        this.standardNextSerial = serial
+      }
+      this.pushDesignHistory()
+      this._setActiveElements([...this._activeElements(), ...remapped])
+      arr.splice(idx, 1)
+      this.selectedElementIds = [newRootId]
     }
   }
 })
