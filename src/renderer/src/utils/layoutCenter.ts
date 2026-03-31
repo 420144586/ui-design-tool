@@ -42,6 +42,24 @@ export function applyLayoutCenterToInlineStyle(
     return
   }
 
+  /** Flex 画布根为 position:relative 的 flex 子项，居中语义与 absolute 一致（left/top + transform） */
+  if (layoutMode === 'flex') {
+    if (ch && cv) {
+      style.left = '50%'
+      style.top = '50%'
+      style.transform = 'translate(-50%, -50%)'
+      return
+    }
+    if (ch) {
+      style.left = '50%'
+      style.transform = 'translateX(-50%)'
+      return
+    }
+    style.top = '50%'
+    style.transform = 'translateY(-50%)'
+    return
+  }
+
   if (ch && cv) {
     style.left = '50%'
     style.top = '50%'

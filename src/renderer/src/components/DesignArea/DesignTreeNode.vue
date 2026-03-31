@@ -9,7 +9,8 @@ import { applyBoxBorderToStyle, isBorderSideEnabled } from '@renderer/utils/elem
 import { applyLayoutCenterToInlineStyle, gridPlacementForElement } from '@renderer/utils/layoutCenter'
 import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
 import { applyPaddingMarginToStyle, effectivePaddingInsets } from '@renderer/utils/elementSpacing'
-import { applyFlexContainerToStyle } from '@renderer/utils/elementFlex'
+import { applyFlexContainerToStyle, sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
+import { elementDomClass } from '@renderer/utils/elementClassStrategy'
 
 defineOptions({ name: 'DesignTreeNode' })
 
@@ -88,15 +89,12 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', onRowMove)
 })
 
-const children = computed(() => {
-  const list = props.elements.filter((item) => item.parentId === props.element.id)
-  const byLayer = (a: (typeof list)[0], b: (typeof list)[0]) => a.y - b.y || a.x - b.x
-  const byHorizontal = (a: (typeof list)[0], b: (typeof list)[0]) => a.x - b.x || a.y - b.y
-  if (props.element.kind === 'image' && props.element.type === 'div') {
-    return [...list].sort(byHorizontal)
-  }
-  return [...list].sort(byLayer)
-})
+const children = computed(() => sortSiblingsForRenderOrder(props.elements, props.element.id))
+
+/** 全局 Grid 或父级勾选「子级 Grid」时，子项走网格占位（与 codegen shouldUseGridPlacementCss 一致） */
+const useGridLikePlacement = computed(
+  () => props.layoutMode === 'grid' || props.parent?.gridLayoutForChildren === true
+)
 
 const relativeX = computed(() => (props.parent ? props.element.x - props.parent.x : props.element.x))
 const relativeY = computed(() => (props.parent ? props.element.y - props.parent.y : props.element.y))
@@ -231,10 +229,61 @@ const nodeStyle = computed(() => {
     return style
   }
 
+  /** Flex 画布根节点：作为 .layer flex 容器内的子项，与导出 rootStackingCss 一致 */
+  if (!props.parent && props.layoutMode === 'flex') {
+    const style: Record<string, string> = { ...commonStyle }
+    const isDComponent = props.element.kind === 'dcomponent'
+    const wh = cssWidthHeightStrings(props.element)
+    style.position = 'relative'
+    style.zIndex = String(props.element.serial)
+    /** 画布容器：满铺 .layer，与画布可视区域完全重叠（数据宽高仍用于导出与命中） */
+    if (props.element.isFlexPageShell) {
+      style.left = '0'
+      style.top = '0'
+      style.width = '100%'
+      style.height = '100%'
+      style.flex = '1 1 auto'
+      style.flexShrink = '1'
+      style.minWidth = '0'
+      style.minHeight = '0'
+      style.alignSelf = 'stretch'
+    } else {
+      style.flexShrink = '0'
+      style.left = `${relativeX.value}px`
+      style.top = `${relativeY.value}px`
+      style.width = wh.width
+      style.height = wh.height
+    }
+    applyParentBoundsClamp(style, props.element)
+    style.background = isDComponent ? 'transparent' : cssBackgroundFill(props.element)
+    style.opacity = String(props.element.opacity)
+    if (
+      props.element.kind === 'column' &&
+      children.value.length > 0 &&
+      !props.element.flexLayoutEnabled
+    ) {
+      style.display = 'flex'
+      style.flexDirection = 'column'
+      style.alignItems = 'stretch'
+      style.justifyContent = 'flex-start'
+    }
+    if (props.element.flexLayoutEnabled) {
+      applyFlexContainerToStyle(style, props.element)
+      style.overflow =
+        props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
+          ? 'auto'
+          : 'hidden'
+    }
+    if (!props.element.flexLayoutEnabled) {
+      applyLayoutCenterToInlineStyle(style, props.element, props.layoutMode)
+    }
+    return style
+  }
+
   const style: Record<string, string> = { ...commonStyle }
   const isDComponent = props.element.kind === 'dcomponent'
   const wh = cssWidthHeightStrings(props.element)
-  if (props.layoutMode === 'grid') {
+  if (useGridLikePlacement.value) {
     const box = layoutPxBox.value
     const gp = gridPlacementForElement(
       { ...props.element, width: box.width, height: box.height },
@@ -541,7 +590,7 @@ const childContainerStyle = computed(() => {
     style.boxSizing = 'border-box'
     return style
   }
-  if (props.layoutMode === 'grid') {
+  if (props.layoutMode === 'grid' || props.element.gridLayoutForChildren) {
     const box = layoutPxBox.value
     style.position = 'absolute'
     applyChildrenLayerInset(style, props.element)
@@ -645,14 +694,14 @@ const childContainerStyle = computed(() => {
     <DButton
       v-if="element.componentKey === 'DButton'"
       class="dcomponent-root"
-      :class="[element.id, element.componentClass?.trim()].filter(Boolean)"
+      :class="[elementDomClass(element), element.componentClass?.trim()].filter(Boolean)"
       :style="dcomponentTypographyStyle"
       :surface-background="cssBackgroundFill(element)"
     />
     <DInput
       v-else-if="element.componentKey === 'DInput'"
       class="dcomponent-root"
-      :class="[element.id, element.componentClass?.trim()].filter(Boolean)"
+      :class="[elementDomClass(element), element.componentClass?.trim()].filter(Boolean)"
       :style="dcomponentTypographyStyle"
       :surface-background="cssBackgroundFill(element)"
     />
@@ -741,11 +790,11 @@ const childContainerStyle = computed(() => {
   text-align: inherit;
 }
 
+/**
+ * 子层需参与命中（auto），否则在 flex-direction 等样式重排后，部分环境下会出现子项无法稳定接收点击。
+ * 点到子层空白处时事件会冒泡到外层 .designer-element，仍可选中父容器。
+ */
 .children-layer {
-  pointer-events: none;
-}
-
-.children-layer :deep(.designer-element) {
   pointer-events: auto;
 }
 

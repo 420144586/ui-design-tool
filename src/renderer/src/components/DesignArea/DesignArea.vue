@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import { useDesignStore } from '@renderer/store/design'
-import type { DesignElement } from '@renderer/types/design'
+import type { DesignElement, ElementPreset } from '@renderer/types/design'
 import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
+import { clampAbsTopLeftInsideParentContent } from '@renderer/utils/designChildPosition'
+import { resolveFlexContainerHitAscend } from '@renderer/utils/designDropTarget'
+import { canAddChildElements } from '@renderer/utils/designElementHost'
+import { sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
 import DesignTreeNode from './DesignTreeNode.vue'
+import ElementContextDrawer from './ElementContextDrawer.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -29,6 +34,20 @@ const initialRootLayout = ref<{ id: string; x: number; y: number }[]>([])
 const movePointerStart = ref<{ x: number; y: number } | null>(null)
 /** 拖放结束后吞掉紧随的一次 canvas click，防止误触发「从预设添加」 */
 const suppressNextCanvasClick = ref(false)
+/**
+ * 已选中祖先时在子元素上按下会暂不切到子元素，以便拖动祖先；
+ * 若松手时未构成拖动，再选中该子元素（纯点击仍能钻入子级）。
+ */
+const pendingDrillDownSelectId = ref<string | null>(null)
+
+/** 右键插入子元素：宿主 id、锚点（画布坐标）、面板锚点（视口 css px） */
+const childInsertContext = ref<{
+  hostId: string
+  canvasX: number
+  canvasY: number
+  panelX: number
+  panelY: number
+} | null>(null)
 
 const DRAG_THRESHOLD_PX = 4
 
@@ -42,6 +61,7 @@ const finishPointerDrag = (event: MouseEvent): void => {
 
   if (roots.length === 0 || !movePointerStart.value) {
     movePointerStart.value = null
+    pendingDrillDownSelectId.value = null
     return
   }
 
@@ -63,7 +83,16 @@ const finishPointerDrag = (event: MouseEvent): void => {
     }
   }
 
-  if (!dragged) return
+  if (!dragged) {
+    const pending = pendingDrillDownSelectId.value
+    pendingDrillDownSelectId.value = null
+    if (pending) {
+      store.selectElement(pending)
+    }
+    return
+  }
+
+  pendingDrillDownSelectId.value = null
 
   suppressNextCanvasClick.value = true
 
@@ -91,6 +120,18 @@ const finishPointerDrag = (event: MouseEvent): void => {
   }
 
   if (!dropTargetId) return
+
+  const resolved = resolveFlexContainerHitAscend(store, event.clientX, event.clientY, dropTargetId)
+  if (!movedSet.has(resolved)) {
+    let invalidResolved = false
+    for (const r of roots) {
+      if (store.isDescendantOf(r, resolved)) {
+        invalidResolved = true
+        break
+      }
+    }
+    if (!invalidResolved) dropTargetId = resolved
+  }
   if (roots.every((rid) => store.elements.find((e) => e.id === rid)?.parentId === dropTargetId)) {
     return
   }
@@ -112,14 +153,33 @@ const gridBackground = computed(() => {
 })
 
 const layerStyle = computed(() => {
-  if (store.canvas.layoutMode !== 'grid') return {}
-  return {
-    display: 'grid',
-    /** 与子项 grid 占位（含 1/-1 跨满）配合，使 place-self/justify-self 在可视区域内生效 */
-    placeItems: 'center',
-    gridTemplateColumns: `repeat(${Math.max(1, Math.floor(store.designSurfaceWidth / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`,
-    gridTemplateRows: `repeat(${Math.max(1, Math.floor(store.designSurfaceHeight / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`
+  if (store.canvas.layoutMode === 'grid') {
+    return {
+      display: 'grid',
+      /** 与子项 grid 占位（含 1/-1 跨满）配合，使 place-self/justify-self 在可视区域内生效 */
+      placeItems: 'center',
+      gridTemplateColumns: `repeat(${Math.max(1, Math.floor(store.designSurfaceWidth / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`,
+      gridTemplateRows: `repeat(${Math.max(1, Math.floor(store.designSurfaceHeight / store.canvas.gridSize))}, ${store.canvas.gridSize}px)`
+    }
   }
+  if (store.canvas.layoutMode === 'flex') {
+    /**
+     * 设计器内与画布像素区域完全重合（无 padding/gap），避免「画布容器」与灰底画布错位。
+     * 导出 HTML 中 body 仍可保留 gap/padding（见 codegen flexCanvasRootCss）。
+     */
+    return {
+      display: 'flex',
+      flexFlow: 'row wrap',
+      alignItems: 'stretch',
+      alignContent: 'stretch',
+      gap: 0,
+      padding: 0,
+      boxSizing: 'border-box' as const,
+      width: '100%',
+      height: '100%'
+    }
+  }
+  return {}
 })
 
 const canvasWrapStyle = computed(() => {
@@ -134,9 +194,7 @@ const canvasWrapStyle = computed(() => {
   return { ...base, transform: `scale(${store.canvas.zoom})` }
 })
 
-const rootElements = computed(() =>
-  store.elements.filter((item) => item.parentId === null).sort((a, b) => a.y - b.y || a.x - b.x)
-)
+const rootElements = computed(() => sortSiblingsForRenderOrder(store.elements, null))
 
 onUnmounted(() => {
   window.removeEventListener('mousemove', onWindowPointerMove, true)
@@ -204,12 +262,23 @@ const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => 
 
   const mod = event.ctrlKey || event.metaKey
   if (mod) {
+    pendingDrillDownSelectId.value = null
     store.toggleSelectElement(element.id)
     if (!store.selectedElementIds.includes(element.id)) {
       return
     }
   } else if (!store.selectedElementIds.includes(element.id)) {
-    store.selectElement(element.id)
+    const keepSelectionBecauseAncestorSelected = store.selectedElementIds.some((sid) =>
+      store.isDescendantOf(sid, element.id)
+    )
+    if (keepSelectionBecauseAncestorSelected) {
+      pendingDrillDownSelectId.value = element.id
+    } else {
+      pendingDrillDownSelectId.value = null
+      store.selectElement(element.id)
+    }
+  } else {
+    pendingDrillDownSelectId.value = null
   }
 
   /**
@@ -238,6 +307,9 @@ const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => 
   const roots = store.selectionRoots(store.selectedElementIds)
   if (roots.length === 0) return
 
+  /** Flex 模式下由浏览器布局定位，不启用画布拖拽移动/拖放改父级 */
+  if (store.canvas.layoutMode === 'flex') return
+
   dragStartCanvas.value = {
     x: store.snap((event.clientX - rect.left) / zoom),
     y: store.snap((event.clientY - rect.top) / zoom)
@@ -256,6 +328,220 @@ const onElementMouseDown = (event: MouseEvent, element: DesignElement): void => 
   window.addEventListener('mouseup', finishPointerDrag, true)
 }
 
+/** 将预设作为指定宿主的子元素，锚点（画布坐标）对齐新块中心并限制在宿主内容区内 */
+const placePresetAsChildOf = (
+  hostId: string,
+  preset: ElementPreset,
+  anchorCanvasX: number,
+  anchorCanvasY: number
+): void => {
+  const host = store.elements.find((e) => e.id === hostId)
+  if (!host || !canAddChildElements(host)) return
+  const snap = (n: number) => store.snap(n)
+  const tl = (w: number, h: number) =>
+    clampAbsTopLeftInsideParentContent(
+      host,
+      w,
+      h,
+      anchorCanvasX - w / 2,
+      anchorCanvasY - h / 2,
+      snap
+    )
+
+  if (preset.kind === 'div') {
+    const { x, y } = tl(preset.width, preset.height)
+    store.addElement({ ...preset, x, y }, { parentId: host.id })
+    return
+  }
+
+  if (preset.kind === 'image') {
+    const w = preset.width
+    const h = preset.height
+    const { x: x0, y: y0 } = tl(w, h)
+    if (!preset.hasLabel) {
+      store.addElement(
+        {
+          kind: 'image',
+          type: 'img',
+          name: preset.name,
+          x: x0,
+          y: y0,
+          width: w,
+          height: h,
+          background: preset.background,
+          text: '',
+          opacity: preset.opacity,
+          imageSrc: preset.imageSrc ?? ''
+        },
+        { parentId: host.id }
+      )
+      return
+    }
+    store.beginHistoryBatch()
+    const container = store.addElement(
+      {
+        kind: 'image',
+        type: 'div',
+        name: preset.name,
+        x: x0,
+        y: y0,
+        width: w,
+        height: h,
+        background: preset.background,
+        text: preset.text,
+        opacity: preset.opacity,
+        hasLabel: true,
+        gap: preset.gap ?? 10,
+        imageSrc: preset.imageSrc ?? ''
+      },
+      { parentId: host.id }
+    )
+    store.rebuildImageChildren(container.id)
+    store.endHistoryBatch()
+    return
+  }
+
+  if (preset.kind === 'table') {
+    const w = preset.width
+    const h = preset.height
+    const { x: x0, y: y0 } = tl(w, h)
+    store.beginHistoryBatch()
+    const tableEl = store.addElement(
+      {
+        kind: 'table',
+        type: 'table',
+        name: preset.name,
+        x: x0,
+        y: y0,
+        width: w,
+        height: h,
+        background: preset.background,
+        text: '',
+        opacity: preset.opacity,
+        tableRows: preset.tableRows,
+        tableCols: preset.tableCols,
+        borderColor: preset.borderColor
+      },
+      { parentId: host.id }
+    )
+    store.initTableCells(tableEl.id)
+    store.endHistoryBatch()
+    return
+  }
+
+  if (preset.kind === 'dcomponent') {
+    const w = preset.width
+    const h = preset.height
+    const { x: x0, y: y0 } = tl(w, h)
+    store.addElement(
+      {
+        kind: 'dcomponent',
+        type: 'div',
+        name: preset.name,
+        x: x0,
+        y: y0,
+        width: w,
+        height: h,
+        background: preset.background,
+        text: '',
+        opacity: preset.opacity,
+        componentKey: preset.componentKey,
+        componentClass: ''
+      },
+      { parentId: host.id }
+    )
+    return
+  }
+
+  const containerW = preset.width
+  const containerH = preset.height
+  const { x: containerX, y: containerY } = tl(containerW, containerH)
+  store.beginHistoryBatch()
+  const container = store.addElement(
+    {
+      kind: 'column',
+      type: 'div',
+      name: preset.name,
+      x: containerX,
+      y: containerY,
+      width: containerW,
+      height: containerH,
+      background: preset.background,
+      text: preset.text,
+      opacity: preset.opacity,
+      childCount: Math.max(1, Math.floor(preset.childCount))
+    },
+    { parentId: host.id }
+  )
+  const childCount = Math.max(1, Math.floor(preset.childCount))
+  const heights = computeColumnChildHeights(containerH, childCount)
+  let yOffset = 0
+  for (let i = 0; i < childCount; i += 1) {
+    const childH = heights[i] ?? 0
+    if (childH <= 0) continue
+    store.addElement(
+      {
+        kind: 'div',
+        type: 'div',
+        name: `ColumnChild-${container.serial}-${i + 1}`,
+        x: containerX,
+        y: containerY + yOffset,
+        width: containerW,
+        height: childH,
+        background: preset.background,
+        text: '',
+        opacity: 0.8
+      },
+      { select: false, parentId: container.id }
+    )
+    yOffset += childH
+  }
+  store.endHistoryBatch()
+}
+
+const onLayerContextMenu = (event: MouseEvent): void => {
+  if (movingRootIds.value.length > 0) return
+  const rect = canvasRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const zoom = store.canvas.zoom
+  const canvasX = store.snap((event.clientX - rect.left) / zoom)
+  const canvasY = store.snap((event.clientY - rect.top) / zoom)
+  const stack = document.elementsFromPoint(event.clientX, event.clientY)
+  let hostId: string | null = null
+  for (const node of stack) {
+    if (!(node instanceof HTMLElement)) continue
+    const id = node.dataset.elementId
+    if (!id) continue
+    const el = store.elements.find((item) => item.id === id)
+    if (!el || !canAddChildElements(el)) continue
+    hostId = id
+    break
+  }
+  if (!hostId) return
+  event.preventDefault()
+  event.stopPropagation()
+  const panelW = 280
+  const panelMaxH = 420
+  childInsertContext.value = {
+    hostId,
+    canvasX,
+    canvasY,
+    panelX: Math.min(event.clientX, Math.max(8, window.innerWidth - panelW - 8)),
+    panelY: Math.min(event.clientY, Math.max(8, window.innerHeight - panelMaxH - 8))
+  }
+}
+
+const onChildInsertPick = (preset: ElementPreset): void => {
+  const ctx = childInsertContext.value
+  if (!ctx) return
+  placePresetAsChildOf(ctx.hostId, preset, ctx.canvasX, ctx.canvasY)
+  childInsertContext.value = null
+}
+
+const closeChildInsertDrawer = (): void => {
+  childInsertContext.value = null
+}
+
 /** 在画布坐标下放置当前激活的预设（元素库 / 含组件） */
 const placeActivePresetAtPointer = (event: MouseEvent): void => {
   const rect = canvasRef.value?.getBoundingClientRect()
@@ -263,11 +549,24 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
   const zoom = store.canvas.zoom
   const x = store.snap((event.clientX - rect.left) / zoom)
   const y = store.snap((event.clientY - rect.top) / zoom)
-  const hitEl = (event.target as HTMLElement).closest('[data-element-id]') as HTMLElement | null
-  const hitElementId = hitEl?.dataset.elementId ?? null
+  let hitElementId: string | null = null
+  const stack = document.elementsFromPoint(event.clientX, event.clientY)
+  for (const node of stack) {
+    if (!(node instanceof HTMLElement)) continue
+    const id = node.dataset.elementId
+    if (!id) continue
+    const el = store.elements.find((item) => item.id === id)
+    if (!el || el.kind === 'table') continue
+    hitElementId = resolveFlexContainerHitAscend(store, event.clientX, event.clientY, id)
+    break
+  }
+
+  const clientPointer = { clientX: event.clientX, clientY: event.clientY }
 
   const preset = store.activePreset
   if (!preset) return
+
+  const presetPlaceOpts = { hitElementId, clientPointer }
 
   if (preset.kind === 'div') {
     store.addElement(
@@ -276,7 +575,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         x: Math.min(Math.max(0, x), store.designSurfaceWidth - preset.width),
         y: Math.min(Math.max(0, y), store.designSurfaceHeight - preset.height)
       },
-      { hitElementId }
+      presetPlaceOpts
     )
     return
   }
@@ -301,7 +600,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
           opacity: preset.opacity,
           imageSrc: preset.imageSrc ?? ''
         },
-        { hitElementId }
+        presetPlaceOpts
       )
       return
     }
@@ -322,7 +621,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         gap: preset.gap ?? 10,
         imageSrc: preset.imageSrc ?? ''
       },
-      { hitElementId }
+      presetPlaceOpts
     )
     store.rebuildImageChildren(container.id)
     store.endHistoryBatch()
@@ -351,7 +650,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         tableCols: preset.tableCols,
         borderColor: preset.borderColor
       },
-      { hitElementId }
+      presetPlaceOpts
     )
     store.initTableCells(tableEl.id)
     store.endHistoryBatch()
@@ -378,7 +677,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         componentKey: preset.componentKey,
         componentClass: ''
       },
-      { hitElementId }
+      presetPlaceOpts
     )
     return
   }
@@ -404,7 +703,7 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
       opacity: preset.opacity,
       childCount: Math.max(1, Math.floor(preset.childCount))
     },
-    { hitElementId }
+    presetPlaceOpts
   )
 
   const childCount = Math.max(1, Math.floor(preset.childCount))
@@ -476,7 +775,7 @@ const onCanvasClick = (event: MouseEvent): void => {
       <div
         ref="canvasRef"
         class="canvas"
-        :class="{ 'canvas--no-grid': embeddedVirtual }"
+        :class="{ 'canvas--no-grid': embeddedVirtual || store.canvas.layoutMode === 'flex' }"
         :style="embeddedVirtual ? {} : gridBackground"
         @mousemove="onMouseMove"
         @mouseleave="onMouseLeave"
@@ -485,6 +784,7 @@ const onCanvasClick = (event: MouseEvent): void => {
           class="layer"
           :style="layerStyle"
           @click.capture="onLayerPresetClickCapture"
+          @contextmenu.capture="onLayerContextMenu"
           @click="onCanvasClick"
         >
           <DesignTreeNode
@@ -518,6 +818,13 @@ const onCanvasClick = (event: MouseEvent): void => {
         />
       </div>
     </div>
+    <ElementContextDrawer
+      :visible="!!childInsertContext"
+      :anchor-x="childInsertContext?.panelX ?? 0"
+      :anchor-y="childInsertContext?.panelY ?? 0"
+      @pick="onChildInsertPick"
+      @close="closeChildInsertDrawer"
+    />
   </section>
 </template>
 

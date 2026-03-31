@@ -11,6 +11,7 @@ import {
 import NumericInput from '@renderer/components/NumericInput/NumericInput.vue'
 import { generateStyleBlockForElement } from '@renderer/utils/codegen'
 import { flexContainerCssLines } from '@renderer/utils/elementFlex'
+import { generateElementDomClass } from '@renderer/utils/elementClassStrategy'
 import type {
   AlignContent,
   AlignItems,
@@ -28,6 +29,12 @@ const panelTab = ref<'property' | 'css' | 'animation'>('property')
 const tableStripeSubPanel = ref<'tr' | 'td'>('tr')
 
 const selected = computed(() => store.selectedElement)
+
+const domClassStrategyHint = computed(() => {
+  const s = selected.value
+  if (!s) return ''
+  return generateElementDomClass({ element: s })
+})
 
 const canvasForStyleCodegen = computed(() => ({
   ...store.canvas,
@@ -141,6 +148,38 @@ const onFlexLayoutToggle = (e: Event): void => {
     store.updateElement(s.id, { flexLayoutEnabled: false })
   }
 }
+
+/** 全局 Flex 画布下：主开关改为「子级 Grid」，与 Flex 子级排版互斥 */
+const onGridLayoutForChildrenToggle = (e: Event): void => {
+  const on = (e.target as HTMLInputElement).checked
+  const s = selected.value
+  if (!s) return
+  if (on) {
+    store.updateElement(s.id, { gridLayoutForChildren: true })
+  } else {
+    store.updateElement(s.id, {
+      flexLayoutEnabled: true,
+      gridLayoutForChildren: false,
+      flexDirection: s.flexDirection ?? 'row',
+      flexWrap: s.flexWrap ?? 'nowrap',
+      justifyContent: s.justifyContent ?? 'flex-start',
+      alignItems: s.alignItems ?? 'stretch',
+      alignContent: s.alignContent ?? 'stretch',
+      flexGap: s.flexGap ?? 0,
+      layoutCenterHorizontal: false,
+      layoutCenterVertical: false
+    })
+  }
+}
+
+const flexPropsVisible = computed(() => {
+  const s = selected.value
+  if (!s) return false
+  if (store.canvas.layoutMode === 'flex') {
+    return !s.gridLayoutForChildren
+  }
+  return !!s.flexLayoutEnabled
+})
 /** 字体颜色预设（下拉快速选择，可与下方自定义色并用） */
 const TEXT_COLOR_PRESETS: ReadonlyArray<{ value: string; label: string }> = [
   { value: '#f1f4fb', label: '浅灰白' },
@@ -395,6 +434,31 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
         </div>
         <template v-else-if="selected">
       <div class="style-group">
+        <div class="group-title">标识与导出类名</div>
+        <label>
+          元素名称（树与策略参考）
+          <input
+            :value="selected.name"
+            @input="update('name', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label>
+          CSS 类名（导出 / 预览主选择器）
+          <input
+            :value="selected.domClass ?? ''"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            :placeholder="domClassStrategyHint"
+            title="留空或未填时：旧稿用内部 id；新元素默认由类名策略生成。可清空输入框以按当前策略重算。"
+            @input="update('domClass', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <p class="flex-hint">
+          建议使用合法 CSS 类名片段。自定义命名规则请见工具模块 elementClassStrategy（setElementClassStrategy）。
+        </p>
+      </div>
+      <div class="style-group">
         <div class="group-title">排版与尺寸</div>
         <div class="row-inputs">
           <label class="half">
@@ -460,18 +524,33 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
 
       <div class="style-group" v-if="showFlexLayoutSection">
         <div class="group-title">Flex 布局</div>
-        <label class="check flex-master-check">
-          <input
-            type="checkbox"
-            :checked="!!selected.flexLayoutEnabled"
-            @change="onFlexLayoutToggle"
-          />
-          使用 Flex 排列子元素
-        </label>
-        <p v-if="!selected.flexLayoutEnabled" class="flex-hint">
-          勾选后内部子元素按主轴排列（可先添加子元素再调整）；适用于多列容器、普通块、图片容器、表格单元格等。
-        </p>
+        <template v-if="store.canvas.layoutMode === 'flex'">
+          <label class="check flex-master-check">
+            <input
+              type="checkbox"
+              :checked="!!selected.gridLayoutForChildren"
+              @change="onGridLayoutForChildrenToggle"
+            />
+            使用 Grid 排列子元素
+          </label>
+          <p v-if="selected.gridLayoutForChildren" class="flex-hint">
+            勾选后子元素按网格占位与对齐（与全局 Grid 布局下的子层行为一致）；与 Flex 子级排版互斥。
+          </p>
+        </template>
         <template v-else>
+          <label class="check flex-master-check">
+            <input
+              type="checkbox"
+              :checked="!!selected.flexLayoutEnabled"
+              @change="onFlexLayoutToggle"
+            />
+            使用 Flex 排列子元素
+          </label>
+          <p v-if="!selected.flexLayoutEnabled" class="flex-hint">
+            勾选后内部子元素按主轴排列（可先添加子元素再调整）；适用于多列容器、普通块、图片容器、表格单元格等。
+          </p>
+        </template>
+        <template v-if="flexPropsVisible">
           <div class="flex-props">
             <label>
               flex-direction

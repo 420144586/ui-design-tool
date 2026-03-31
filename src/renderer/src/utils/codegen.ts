@@ -13,7 +13,8 @@ import {
 } from '@renderer/utils/layoutCenter'
 import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
 import { marginCssDecl, paddingCssDecl } from '@renderer/utils/elementSpacing'
-import { flexContainerCssLines } from '@renderer/utils/elementFlex'
+import { flexContainerCssLines, sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
+import { elementDomClass } from '@renderer/utils/elementClassStrategy'
 
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
   [...elements].sort((a, b) => a.y - b.y || a.x - b.x)
@@ -21,23 +22,23 @@ const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
 /** 表格 tr/td :nth-child(odd|even) 条纹背景（导出与属性面板 CSS） */
 export const tableStripingCss = (element: DesignElement): string => {
   if (element.kind !== 'table') return ''
-  const id = element.id
+  const cls = elementDomClass(element)
   const parts: string[] = []
   if (element.tableTrOddBgEnabled) {
     const bg = element.tableTrOddBg?.trim() || '#e8eef5'
-    parts.push(`.${id} tr:nth-child(odd) {\n  background: ${bg};\n}`)
+    parts.push(`.${cls} tr:nth-child(odd) {\n  background: ${bg};\n}`)
   }
   if (element.tableTrEvenBgEnabled) {
     const bg = element.tableTrEvenBg?.trim() || '#ffffff'
-    parts.push(`.${id} tr:nth-child(even) {\n  background: ${bg};\n}`)
+    parts.push(`.${cls} tr:nth-child(even) {\n  background: ${bg};\n}`)
   }
   if (element.tableTdOddBgEnabled) {
     const bg = element.tableTdOddBg?.trim() || '#e8eef5'
-    parts.push(`.${id} td:nth-child(odd) {\n  background: ${bg};\n}`)
+    parts.push(`.${cls} td:nth-child(odd) {\n  background: ${bg};\n}`)
   }
   if (element.tableTdEvenBgEnabled) {
     const bg = element.tableTdEvenBg?.trim() || '#ffffff'
-    parts.push(`.${id} td:nth-child(even) {\n  background: ${bg};\n}`)
+    parts.push(`.${cls} td:nth-child(even) {\n  background: ${bg};\n}`)
   }
   return parts.length ? `${parts.join('\n')}\n` : ''
 }
@@ -54,6 +55,43 @@ const escapeHtml = (s: string): string =>
 const elementHasChildren = (elements: DesignElement[], id: string): boolean =>
   elements.some((item) => item.parentId === id)
 
+function shouldUseGridPlacementCss(
+  layoutMode: LayoutMode,
+  element: DesignElement,
+  parent: DesignElement | undefined
+): boolean {
+  if (layoutMode === 'flex' && !element.parentId) return false
+  if (layoutMode === 'grid') return true
+  if (parent?.gridLayoutForChildren) return true
+  return false
+}
+
+function isRootFlexCanvas(layoutMode: LayoutMode, element: DesignElement): boolean {
+  return layoutMode === 'flex' && element.parentId == null
+}
+
+/** 顶层在 Flex 画布上为 flex 子项，否则为 absolute 堆叠 */
+function rootStackingCss(
+  layoutMode: LayoutMode,
+  element: DesignElement,
+  relativeX: number,
+  relativeY: number
+): string[] {
+  if (isRootFlexCanvas(layoutMode, element)) {
+    return [
+      '  position: relative;',
+      '  flex: 0 0 auto;',
+      `  z-index: ${element.serial};`,
+      ...layoutCenterCssForAbsolute(element, relativeX, relativeY)
+    ]
+  }
+  return [
+    '  position: absolute;',
+    `  z-index: ${element.serial};`,
+    ...layoutCenterCssForAbsolute(element, relativeX, relativeY)
+  ]
+}
+
 /** 与 text-align 一致：flex 叶子容器上调整主轴，避免 justify-content:center 抵消对齐 */
 const flexJustifyFromTextAlign = (ta: DesignElement['textAlign'] | undefined): string => {
   const v = ta ?? 'center'
@@ -67,31 +105,32 @@ const buildTemplateTree = (
   parentId: string | null,
   level: number
 ): string[] => {
-  const nodes = sortByLayer(elements).filter((item) => item.parentId === parentId)
+  const c = (e: DesignElement): string => elementDomClass(e)
+  const nodes = sortSiblingsForRenderOrder(elements, parentId)
   const lines: string[] = []
   nodes.forEach((node) => {
     if (node.kind === 'image' && node.type === 'img') {
       const src = escapeHtml((node.imageSrc ?? '').trim())
-      const block = [`${indent(level)}<img class="${node.id}" src="${src}" alt="" />`]
+      const block = [`${indent(level)}<img class="${c(node)}" src="${src}" alt="" />`]
       lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       return
     }
     if (node.kind === 'image' && node.type === 'div') {
-      const ch = sortByLayer(elements).filter((item) => item.parentId === node.id)
+      const ch = sortSiblingsForRenderOrder(elements, node.id)
       const imgEl = ch.find((item) => item.type === 'img')
       const labelEl = ch.find(
         (item) => item.type === 'div' && item.name.endsWith('-label')
       )
       const block: string[] = []
-      block.push(`${indent(level)}<div class="${node.id}">`)
+      block.push(`${indent(level)}<div class="${c(node)}">`)
       if (imgEl) {
         const src = escapeHtml((imgEl.imageSrc ?? node.imageSrc ?? '').trim())
-        block.push(`${indent(level + 1)}<img class="${imgEl.id}" src="${src}" alt="" />`)
+        block.push(`${indent(level + 1)}<img class="${c(imgEl)}" src="${src}" alt="" />`)
       }
       if (node.hasLabel && labelEl) {
         const t = labelEl.text.trim()
         block.push(
-          `${indent(level + 1)}<div class="${labelEl.id}">${t ? escapeHtml(t) : ''}</div>`
+          `${indent(level + 1)}<div class="${c(labelEl)}">${t ? escapeHtml(t) : ''}</div>`
         )
       }
       block.push(`${indent(level)}</div>`)
@@ -102,7 +141,7 @@ const buildTemplateTree = (
       const rows = Math.max(1, Math.floor(Number(node.tableRows) || 5))
       const cols = Math.max(1, Math.floor(Number(node.tableCols) || 5))
       const block: string[] = []
-      block.push(`${indent(level)}<table class="${node.id}">`)
+      block.push(`${indent(level)}<table class="${c(node)}">`)
       for (let r = 0; r < rows; r += 1) {
         block.push(`${indent(level + 1)}<tr>`)
         for (let c = 0; c < cols; c += 1) {
@@ -133,7 +172,8 @@ const buildTemplateTree = (
           .trim()
           .replace(/[^\w\s-]/g, '')
           .trim()
-        const cls = extra ? `${node.id} ${extra}` : node.id
+        const base = c(node)
+        const cls = extra ? `${base} ${extra}` : base
         const block = [`${indent(level)}<DButton class="${cls}" />`]
         lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       } else if (key === 'DInput') {
@@ -141,7 +181,8 @@ const buildTemplateTree = (
           .trim()
           .replace(/[^\w\s-]/g, '')
           .trim()
-        const cls = extra ? `${node.id} ${extra}` : node.id
+        const base = c(node)
+        const cls = extra ? `${base} ${extra}` : base
         const block = [`${indent(level)}<DInput class="${cls}" />`]
         lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       }
@@ -152,17 +193,17 @@ const buildTemplateTree = (
     const label = node.text.trim()
     if (children.length === 0) {
       const inner = label
-        ? `<span class="${node.id}-text">${escapeHtml(label)}</span>`
+        ? `<span class="${c(node)}-text">${escapeHtml(label)}</span>`
         : ''
-      const block = [`${indent(level)}<div class="${node.id}">${inner}</div>`]
+      const block = [`${indent(level)}<div class="${c(node)}">${inner}</div>`]
       lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       return
     }
     const block: string[] = []
-    block.push(`${indent(level)}<div class="${node.id}">`)
+    block.push(`${indent(level)}<div class="${c(node)}">`)
     if (label) {
       block.push(
-        `${indent(level + 1)}<span class="${node.id}-label"><span class="${node.id}-label-inner">${escapeHtml(label)}</span></span>`
+        `${indent(level + 1)}<span class="${c(node)}-label"><span class="${c(node)}-label-inner">${escapeHtml(label)}</span></span>`
       )
     }
     block.push(...children)
@@ -232,6 +273,7 @@ export function generateStyleBlockForElement(
   const parent = element.parentId ? elements.find((item) => item.id === element.parentId) : undefined
   const relativeX = parent ? element.x - parent.x : element.x
   const relativeY = parent ? element.y - parent.y : element.y
+  const ec = elementDomClass(element)
   const hasChildren = elementHasChildren(elements, element.id)
   const leafTextInnerRule =
     !hasChildren &&
@@ -239,7 +281,7 @@ export function generateStyleBlockForElement(
     element.kind !== 'image' &&
     element.kind !== 'table' &&
     element.kind !== 'dcomponent'
-      ? `\n.${element.id}-text {\n  display: block;\n  width: 100%;\n  min-width: 0;\n}`
+      ? `\n.${ec}-text {\n  display: block;\n  width: 100%;\n  min-width: 0;\n}`
       : ''
   const boxPx = resolveElementLayoutPxBox(element, elements, canvas)
   const wh = cssWidthHeightStrings(element)
@@ -267,10 +309,10 @@ export function generateStyleBlockForElement(
   commonStyles.push(...marginCssDecl(element))
 
   if (element.kind === 'image' && element.type === 'img') {
-    if (layoutMode === 'grid') {
+    if (shouldUseGridPlacementCss(layoutMode, element, parent)) {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
-        `.${element.id} {`,
+        `.${ec} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...gridItemSelfCss(),
@@ -284,10 +326,8 @@ export function generateStyleBlockForElement(
       ].join('\n')
     }
     return [
-      `.${element.id} {`,
-      '  position: absolute;',
-      `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `.${ec} {`,
+      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  opacity: ${element.opacity};`,
@@ -308,14 +348,12 @@ export function generateStyleBlockForElement(
           '  align-items: center;',
           `  gap: ${gap}px;`
         ]
-    if (layoutMode === 'grid') {
+    if (shouldUseGridPlacementCss(layoutMode, element, parent)) {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       if (element.flexLayoutEnabled && hasChildren) {
         return [
-          `.${element.id} {`,
-          '  position: absolute;',
-          `  z-index: ${element.serial};`,
-          ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+          `.${ec} {`,
+          ...rootStackingCss(layoutMode, element, relativeX, relativeY),
           `  width: ${wh.width};`,
           `  height: ${wh.height};`,
           `  background: ${cssBackgroundFill(element)};`,
@@ -326,7 +364,7 @@ export function generateStyleBlockForElement(
         ].join('\n')
       }
       return [
-        `.${element.id} {`,
+        `.${ec} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...gridItemSelfCss(),
@@ -341,10 +379,8 @@ export function generateStyleBlockForElement(
       ].join('\n')
     }
     return [
-      `.${element.id} {`,
-      '  position: absolute;',
-      `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `.${ec} {`,
+      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
@@ -385,15 +421,15 @@ export function generateStyleBlockForElement(
             : [])
         ]
         cellRuleBlocks.push(
-          `.${element.id} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) {\n${inner.join('\n')}\n}`
+          `.${ec} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) {\n${inner.join('\n')}\n}`
         )
       }
     }
     const cellRules = cellRuleBlocks.length ? `\n${cellRuleBlocks.join('\n')}` : ''
-    if (layoutMode === 'grid') {
+    if (shouldUseGridPlacementCss(layoutMode, element, parent)) {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
-        `.${element.id} {`,
+        `.${ec} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...gridItemSelfCss(),
@@ -406,7 +442,7 @@ export function generateStyleBlockForElement(
         '  table-layout: fixed;',
         ...commonStyles,
         '}',
-        `.${element.id} td {`,
+        `.${ec} td {`,
         `  border: 1px solid ${bc};`,
         '  position: relative;',
         '  vertical-align: top;',
@@ -418,10 +454,8 @@ export function generateStyleBlockForElement(
         .join('\n')
     }
     return [
-      `.${element.id} {`,
-      '  position: absolute;',
-      `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `.${ec} {`,
+      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
@@ -430,7 +464,7 @@ export function generateStyleBlockForElement(
       '  table-layout: fixed;',
       ...commonStyles,
       '}',
-      `.${element.id} td {`,
+      `.${ec} td {`,
       `  border: 1px solid ${bc};`,
       '  position: relative;',
       '  vertical-align: top;',
@@ -444,7 +478,7 @@ export function generateStyleBlockForElement(
 
   if (parent?.kind === 'image' && element.type === 'img') {
     return [
-      `.${element.id} {`,
+      `.${ec} {`,
       '  flex: 0 0 auto;',
       '  width: 30px;',
       '  height: 30px;',
@@ -463,7 +497,7 @@ export function generateStyleBlockForElement(
     element.name.endsWith('-label')
   ) {
     return [
-      `.${element.id} {`,
+      `.${ec} {`,
       '  flex: 1 1 auto;',
       '  min-width: 100px;',
       '  max-width: none;',
@@ -496,7 +530,7 @@ export function generateStyleBlockForElement(
       : []
     return (
       [
-        `.${element.id} {`,
+        `.${ec} {`,
         '  position: relative;',
         '  flex-shrink: 0;',
         `  width: ${wh.width};`,
@@ -523,7 +557,7 @@ export function generateStyleBlockForElement(
             `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`
           ]
     return [
-      `.${element.id} {`,
+      `.${ec} {`,
       '  position: relative;',
       '  flex: 1 1 0;',
       '  min-height: 0;',
@@ -536,7 +570,7 @@ export function generateStyleBlockForElement(
     ].join('\n') + leafTextInnerRule
   }
 
-  if (layoutMode === 'grid') {
+  if (shouldUseGridPlacementCss(layoutMode, element, parent)) {
     const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
     if (!hasChildren) {
       const noChildLayout = element.flexLayoutEnabled
@@ -547,7 +581,7 @@ export function generateStyleBlockForElement(
             `  justify-content: ${flexJustifyFromTextAlign(element.textAlign)};`
           ]
       return [
-        `.${element.id} {`,
+        `.${ec} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...gridItemSelfCss(),
@@ -573,10 +607,8 @@ export function generateStyleBlockForElement(
           ]
       if (element.flexLayoutEnabled) {
         return [
-          `.${element.id} {`,
-          '  position: absolute;',
-          `  z-index: ${element.serial};`,
-          ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+          `.${ec} {`,
+          ...rootStackingCss(layoutMode, element, relativeX, relativeY),
           `  width: ${wh.width};`,
           `  height: ${wh.height};`,
           `  background: ${cssBackgroundFill(element)};`,
@@ -587,7 +619,7 @@ export function generateStyleBlockForElement(
         ].join('\n')
       }
       return [
-        `.${element.id} {`,
+        `.${ec} {`,
         `  grid-column: ${gp.gridColumn};`,
         `  grid-row: ${gp.gridRow};`,
         ...gridItemSelfCss(),
@@ -603,10 +635,8 @@ export function generateStyleBlockForElement(
     }
     if (hasChildren && element.flexLayoutEnabled) {
       return [
-        `.${element.id} {`,
-        '  position: absolute;',
-        `  z-index: ${element.serial};`,
-        ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+        `.${ec} {`,
+        ...rootStackingCss(layoutMode, element, relativeX, relativeY),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
         `  background: ${cssBackgroundFill(element)};`,
@@ -618,7 +648,7 @@ export function generateStyleBlockForElement(
       ].join('\n')
     }
     return [
-      `.${element.id} {`,
+      `.${ec} {`,
       `  grid-column: ${gp.gridColumn};`,
       `  grid-row: ${gp.gridRow};`,
       ...gridItemSelfCss(),
@@ -647,10 +677,8 @@ export function generateStyleBlockForElement(
           '  overflow: hidden;'
         ]
     return [
-      `.${element.id} {`,
-      '  position: absolute;',
-      `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `.${ec} {`,
+      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
@@ -675,10 +703,8 @@ export function generateStyleBlockForElement(
 
   return (
     [
-      `.${element.id} {`,
-      '  position: absolute;',
-      `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY),
+      `.${ec} {`,
+      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
       `  background: ${cssBackgroundFill(element)};`,
@@ -698,15 +724,36 @@ export const generateStyleCode = (
   layoutMode: LayoutMode,
   canvas: Pick<CanvasConfig, 'width' | 'height' | 'gridSize'>
 ): string => {
+  const flexCanvasRootCss =
+    layoutMode === 'flex'
+      ? [
+          'body {',
+          '  display: flex;',
+          '  flex-flow: row wrap;',
+          '  align-items: flex-start;',
+          '  align-content: flex-start;',
+          '  gap: 12px;',
+          '  padding: 8px;',
+          '  box-sizing: border-box;',
+          '  margin: 0;',
+          `  width: ${canvas.width}px;`,
+          `  min-height: ${canvas.height}px;`,
+          '  background: #1a1f2b;',
+          '}'
+        ].join('\n')
+      : ''
+
   const elementStyles = sortByLayer(elements)
     .map((el) => generateStyleBlockForElement(el, elements, layoutMode, canvas))
     .filter((block) => block !== '')
 
   const overlayLabelStyles = sortByLayer(elements)
     .filter((el) => el.text.trim() && elementHasChildren(elements, el.id))
-    .flatMap((el) => [
+    .flatMap((el) => {
+      const lc = elementDomClass(el)
+      return [
       [
-        `.${el.id}-label {`,
+        `.${lc}-label {`,
         '  position: absolute;',
         '  inset: 0;',
         '  display: flex;',
@@ -718,20 +765,23 @@ export const generateStyleCode = (
         '}'
       ].join('\n'),
       [
-        `.${el.id}-label-inner {`,
+        `.${lc}-label-inner {`,
         '  display: block;',
         '  width: 100%;',
         '  min-width: 0;',
         '  box-sizing: border-box;',
         '}'
       ].join('\n')
-    ])
+    ]
+    })
 
   const animationStyles = elements
     .map((el) => generateAnimationStyleBlockForElement(el))
     .filter((block) => block !== '')
 
-  return [...elementStyles, '', ...overlayLabelStyles, '', ...animationStyles].join('\n')
+  return [flexCanvasRootCss, ...elementStyles, '', ...overlayLabelStyles, '', ...animationStyles]
+    .filter((block) => block !== '')
+    .join('\n')
 }
 
 export const generateVueSfcCode = (

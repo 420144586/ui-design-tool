@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDesignStore } from '@renderer/store/design'
 import CodeView from '@renderer/components/CodeView/CodeView.vue'
@@ -242,7 +242,10 @@ const saveDesignProject = async (silent: boolean = false): Promise<void> => {
       workspaceMode: store.workspaceMode,
       virtualEnv: store.virtualEnv
     })
-    const result = await invokeSaveDesignProject(content, silent && currentFilePath.value ? currentFilePath.value : undefined)
+    const result = await invokeSaveDesignProject(
+      content,
+      currentFilePath.value ? currentFilePath.value : undefined
+    )
     if (!result.canceled && result.filePath) {
       currentFilePath.value = result.filePath
 
@@ -288,7 +291,7 @@ const loadDesignProject = async (): Promise<void> => {
 }
 
 const clearCanvas = (): void => {
-  if (!store.canonicalElements.length) {
+  if (store.isEffectivelyEmptyCanvas) {
     showToast('画布已经是空的')
     return
   }
@@ -337,6 +340,68 @@ const onDesignHotkeys = (event: KeyboardEvent): void => {
     store.clearSelection()
     return
   }
+
+  const flexDirKey = event.key.toLowerCase()
+  if (
+    (flexDirKey === 'r' || flexDirKey === 'c') &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey
+  ) {
+    const id = store.selectedElementId
+    if (!id) return
+    const el = store.elements.find((e) => e.id === id)
+    if (!el) return
+    if (el.kind === 'dcomponent' || el.type === 'img' || el.kind === 'table') return
+    if (!el.flexLayoutEnabled) return
+    event.preventDefault()
+    store.updateElement(id, { flexDirection: flexDirKey === 'r' ? 'row' : 'column' })
+    /** 避免属性面板 select 等与快捷键竞态后焦点卡住，导致画布点击无法切换选中 */
+    void nextTick(() => {
+      const ae = document.activeElement
+      if (ae instanceof HTMLElement) ae.blur()
+    })
+    return
+  }
+  const reorderTb = store.flexSiblingReorderToolbar
+  if (
+    reorderTb &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    (event.key === 'ArrowLeft' ||
+      event.key === 'ArrowRight' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'ArrowDown')
+  ) {
+    if (reorderTb.axis === 'row') {
+      if (event.key === 'ArrowLeft') {
+        if (!reorderTb.canTowardStart) return
+        event.preventDefault()
+        store.swapSelectedFlexSiblingAlongMainAxis(true)
+        return
+      }
+      if (event.key === 'ArrowRight') {
+        if (!reorderTb.canTowardEnd) return
+        event.preventDefault()
+        store.swapSelectedFlexSiblingAlongMainAxis(false)
+        return
+      }
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      if (!reorderTb.canTowardStart) return
+      event.preventDefault()
+      store.swapSelectedFlexSiblingAlongMainAxis(true)
+      return
+    }
+    if (event.key === 'ArrowDown') {
+      if (!reorderTb.canTowardEnd) return
+      event.preventDefault()
+      store.swapSelectedFlexSiblingAlongMainAxis(false)
+      return
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
     event.preventDefault()
     store.undoDesign()
@@ -349,6 +414,9 @@ const onDesignHotkeys = (event: KeyboardEvent): void => {
 
 onMounted(() => {
   window.addEventListener('keydown', onDesignHotkeys)
+  if (store.canvas.layoutMode === 'flex') {
+    store.ensureFlexPageShell({ skipHistory: true })
+  }
 })
 
 onUnmounted(() => {
@@ -398,6 +466,7 @@ onUnmounted(() => {
           @change="setLayoutMode(($event.target as HTMLSelectElement).value as LayoutMode)"
         >
           <option value="absolute">绝对定位</option>
+          <option value="flex">Flex 布局</option>
           <option value="grid">Grid 布局</option>
         </select>
         <select class="canvas-preset-select" :value="canvasPresetKey" @change="onCanvasPresetChange">
@@ -519,6 +588,49 @@ onUnmounted(() => {
               >
                 选中上级
               </button>
+              <template v-if="store.flexSiblingReorderToolbar">
+                <span class="tb-sep" aria-hidden="true" />
+                <template v-if="store.flexSiblingReorderToolbar.axis === 'row'">
+                  <button
+                    type="button"
+                    class="tb-btn tb-btn-icon"
+                    :disabled="!store.flexSiblingReorderToolbar.canTowardStart"
+                    title="与左侧相邻项交换位置（Flex 行方向）· 方向键 ←"
+                    @click="store.swapSelectedFlexSiblingAlongMainAxis(true)"
+                  >
+                    ←
+                  </button>
+                  <button
+                    type="button"
+                    class="tb-btn tb-btn-icon"
+                    :disabled="!store.flexSiblingReorderToolbar.canTowardEnd"
+                    title="与右侧相邻项交换位置（Flex 行方向）· 方向键 →"
+                    @click="store.swapSelectedFlexSiblingAlongMainAxis(false)"
+                  >
+                    →
+                  </button>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="tb-btn tb-btn-icon"
+                    :disabled="!store.flexSiblingReorderToolbar.canTowardStart"
+                    title="与上方相邻项交换位置（Flex 列方向）· 方向键 ↑"
+                    @click="store.swapSelectedFlexSiblingAlongMainAxis(true)"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    class="tb-btn tb-btn-icon"
+                    :disabled="!store.flexSiblingReorderToolbar.canTowardEnd"
+                    title="与下方相邻项交换位置（Flex 列方向）· 方向键 ↓"
+                    @click="store.swapSelectedFlexSiblingAlongMainAxis(false)"
+                  >
+                    ↓
+                  </button>
+                </template>
+              </template>
               <button
                 type="button"
                 class="tb-btn"
@@ -847,6 +959,13 @@ select,
 
 .tb-btn.danger:hover:not(:disabled) {
   border-color: #a33d45;
+}
+
+.tb-btn-icon {
+  padding: 6px 12px;
+  font-size: 16px;
+  line-height: 1;
+  min-width: 36px;
 }
 
 .left-panel,

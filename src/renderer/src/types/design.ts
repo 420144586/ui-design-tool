@@ -1,4 +1,4 @@
-export type LayoutMode = 'absolute' | 'grid'
+export type LayoutMode = 'absolute' | 'grid' | 'flex'
 
 export type ViewMode = 'design' | 'template' | 'script' | 'style'
 
@@ -53,6 +53,8 @@ export interface CanvasConfig {
 
 export interface DesignElement {
   id: string
+  /** 导出 HTML/CSS 使用的主 class（有意义、可改）；设计器 data-element-id 仍用 id */
+  domClass?: string
   serial: number
   parentId: string | null
   kind: PresetKind
@@ -160,6 +162,10 @@ export interface DesignElement {
   layoutCenterVertical?: boolean
   /** 子级容器使用 flex 布局（children-layer / 表格单元格槽位） */
   flexLayoutEnabled?: boolean
+  /** 子级容器使用与设计器 Grid 模式相同的网格排版（与 flexLayoutEnabled 互斥；全局 Flex 画布下由属性面板「Grid」勾选） */
+  gridLayoutForChildren?: boolean
+  /** Flex 画布自动生成的最外层根容器（唯一；删壳时会提升其子节点为顶层） */
+  isFlexPageShell?: boolean
   flexDirection?: FlexDirection
   flexWrap?: FlexWrap
   justifyContent?: JustifyContent

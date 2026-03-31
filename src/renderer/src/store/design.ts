@@ -11,7 +11,14 @@ import type {
   WorkspaceMode
 } from '@renderer/types/design'
 import type { DesignProjectFileV1 } from '@renderer/utils/designProjectFile'
+import { pointInElementDataBox } from '@renderer/utils/designDropTarget'
+import { canAddChildElements } from '@renderer/utils/designElementHost'
 import { computeColumnChildHeights } from '@renderer/utils/columnLayout'
+import { elementDomClass, generateElementDomClass } from '@renderer/utils/elementClassStrategy'
+import {
+  flexVisualMainAxisNeighborDelta,
+  sortSiblingsForRenderOrder
+} from '@renderer/utils/elementFlex'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const isInside = (
@@ -27,8 +34,30 @@ const defaultCanvas: CanvasConfig = {
   width: 1920,
   height: 1080,
   gridSize: 10,
-  layoutMode: 'grid',
-  zoom: 1
+  layoutMode: 'flex',
+  zoom: 0.8
+}
+
+/** 全局 Flex 画布下新建元素（可挂载子节点的类型）默认启用子项 Flex 容器 */
+function applyFlexCanvasDefaults(target: DesignElement): void {
+  if (target.kind === 'table') return
+  if (target.kind === 'image' && target.type === 'img') return
+  if (target.isFlexPageShell) return
+  const flexDefaults: Partial<DesignElement> = {
+    flexLayoutEnabled: true,
+    gridLayoutForChildren: false,
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    justifyContent: 'flex-start',
+    alignItems: 'stretch',
+    alignContent: 'stretch',
+    flexGap: 0
+  }
+  if (target.isTableCell) {
+    Object.assign(target, flexDefaults)
+    return
+  }
+  Object.assign(target, flexDefaults)
 }
 
 const defaultPreview: DragPreview = {
@@ -137,7 +166,54 @@ export const useDesignStore = defineStore('design', {
     designSurfaceWidth: (state): number =>
       state.workspaceMode === 'virtual-env' ? state.virtualEnv.width : state.canvas.width,
     designSurfaceHeight: (state): number =>
-      state.workspaceMode === 'virtual-env' ? state.virtualEnv.height : state.canvas.height
+      state.workspaceMode === 'virtual-env' ? state.virtualEnv.height : state.canvas.height,
+    /**
+     * Flex：仅存在与画布同尺寸的「画布容器」且无子节点视为空；非 Flex：无任何元素。
+     * 用于「清空画布」等：避免仅剩默认外壳时仍提示可清空。
+     */
+    isEffectivelyEmptyCanvas: (state): boolean => {
+      const els =
+        state.workspaceMode === 'virtual-env' ? state.virtualElements : state.standardElements
+      if (state.canvas.layoutMode !== 'flex') {
+        return els.length === 0
+      }
+      const shell = els.find((e) => e.parentId === null && e.isFlexPageShell)
+      if (shell) {
+        const hasChildOfShell = els.some((e) => e.parentId === shell.id)
+        const orphanRoots = els.some((e) => e.parentId === null && !e.isFlexPageShell)
+        return !hasChildOfShell && !orphanRoots
+      }
+      return els.length === 0
+    },
+    /**
+     * Flex 模式下：选中唯一子项且父级为 flex 容器时，工具栏显示主轴方向交换按钮（←→ 或 ↑↓）。
+     */
+    flexSiblingReorderToolbar: (state): null | {
+      axis: 'row' | 'column'
+      canTowardStart: boolean
+      canTowardEnd: boolean
+    } => {
+      if (state.canvas.layoutMode !== 'flex') return null
+      if (state.selectedElementIds.length !== 1) return null
+      const els =
+        state.workspaceMode === 'virtual-env' ? state.virtualElements : state.standardElements
+      const id = state.selectedElementIds[0]
+      const el = els.find((e) => e.id === id)
+      if (!el?.parentId) return null
+      const parent = els.find((e) => e.id === el.parentId)
+      if (!parent?.flexLayoutEnabled) return null
+      const ordered = sortSiblingsForRenderOrder(els, parent.id)
+      if (ordered.length < 2) return null
+      const idx = ordered.findIndex((e) => e.id === id)
+      if (idx < 0) return null
+      const dir = parent.flexDirection ?? 'row'
+      const d0 = flexVisualMainAxisNeighborDelta(dir, true)
+      const d1 = flexVisualMainAxisNeighborDelta(dir, false)
+      const canTowardStart = idx + d0 >= 0 && idx + d0 < ordered.length
+      const canTowardEnd = idx + d1 >= 0 && idx + d1 < ordered.length
+      const axis = dir === 'row' || dir === 'row-reverse' ? 'row' : 'column'
+      return { axis, canTowardStart, canTowardEnd }
+    }
   },
   actions: {
     _activeElements(): DesignElement[] {
@@ -146,6 +222,67 @@ export const useDesignStore = defineStore('design', {
     _setActiveElements(next: DesignElement[]): void {
       if (this.workspaceMode === 'virtual-env') this.virtualElements = next
       else this.standardElements = next
+    },
+    /** Flex 画布唯一根「画布容器」与设计表面同尺寸 */
+    _syncFlexPageShellSize(): void {
+      if (this.canvas.layoutMode !== 'flex') return
+      const w = this.designSurfaceWidth
+      const h = this.designSurfaceHeight
+      const shell = this._activeElements().find((e) => e.parentId === null && e.isFlexPageShell)
+      if (!shell) return
+      if (shell.width === w && shell.height === h && shell.x === 0 && shell.y === 0) return
+      shell.width = w
+      shell.height = h
+      shell.x = 0
+      shell.y = 0
+    },
+    /**
+     * Flex 布局下保证存在唯一根容器，其它顶层节点归入其下（坐标仍为画布绝对坐标）。
+     * skipHistory：在已 push 的同一用户步骤内合并变更（如 addElement 前）。
+     */
+    ensureFlexPageShell(options?: { skipHistory?: boolean }): void {
+      if (this.canvas.layoutMode !== 'flex') return
+      const els = this._activeElements()
+      const roots = els.filter((e) => e.parentId === null)
+      if (roots.some((e) => e.isFlexPageShell)) return
+
+      const skipHistory = options?.skipHistory === true
+      if (!skipHistory && !this.historyMuted) {
+        this.pushDesignHistory()
+      }
+      const serial =
+        this.workspaceMode === 'virtual-env' ? this.virtualNextSerial++ : this.standardNextSerial++
+      const w = this.designSurfaceWidth
+      const h = this.designSurfaceHeight
+      const newShell: DesignElement = {
+        id: uid(),
+        serial,
+        parentId: null,
+        kind: 'div',
+        type: 'div',
+        name: '画布容器',
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+        background: 'transparent',
+        text: '',
+        opacity: 1,
+        isFlexPageShell: true,
+        flexLayoutEnabled: true,
+        gridLayoutForChildren: false,
+        flexDirection: 'row',
+        flexWrap: 'nowrap',
+        justifyContent: 'flex-start',
+        alignItems: 'stretch',
+        alignContent: 'stretch',
+        flexGap: 0
+      }
+      newShell.domClass = generateElementDomClass({ element: newShell })
+      for (const r of roots) {
+        r.parentId = newShell.id
+      }
+      els.push(newShell)
     },
     _activePast(): DesignHistorySnapshot[] {
       return this.workspaceMode === 'virtual-env'
@@ -239,6 +376,9 @@ export const useDesignStore = defineStore('design', {
     },
     setLayoutMode(layoutMode: LayoutMode): void {
       this.canvas.layoutMode = layoutMode
+      if (layoutMode === 'flex') {
+        this.ensureFlexPageShell()
+      }
     },
     setCanvasPreset(preset: '1920x1080' | '800x600'): void {
       const w = preset === '800x600' ? 800 : 1920
@@ -247,6 +387,7 @@ export const useDesignStore = defineStore('design', {
       this.pushDesignHistory()
       this.canvas.width = w
       this.canvas.height = h
+      this._syncFlexPageShellSize()
     },
     /** 自定义画布像素尺寸（宽×高），会记入撤销栈（仅标准工作区画布） */
     setCanvasDimensions(width: number, height: number): void {
@@ -261,6 +402,7 @@ export const useDesignStore = defineStore('design', {
       this.pushDesignHistory()
       this.canvas.width = nw
       this.canvas.height = nh
+      this._syncFlexPageShellSize()
     },
     /** 虚拟环境设备/设计表面尺寸（与标准画布独立） */
     setVirtualEnvPreset(preset: '1920x1080' | '800x600'): void {
@@ -269,6 +411,7 @@ export const useDesignStore = defineStore('design', {
       if (this.virtualEnv.width === w && this.virtualEnv.height === h) return
       this.pushDesignHistory()
       this.virtualEnv = { ...this.virtualEnv, width: w, height: h }
+      this._syncFlexPageShellSize()
     },
     setVirtualEnvDimensions(width: number, height: number): void {
       const w = Math.floor(Number(width))
@@ -281,6 +424,7 @@ export const useDesignStore = defineStore('design', {
       if (nw === this.virtualEnv.width && nh === this.virtualEnv.height) return
       this.pushDesignHistory()
       this.virtualEnv = { ...this.virtualEnv, width: nw, height: nh }
+      this._syncFlexPageShellSize()
     },
     setZoom(zoom: number): void {
       this.canvas.zoom = Math.min(2, Math.max(0.25, zoom))
@@ -290,21 +434,40 @@ export const useDesignStore = defineStore('design', {
     },
     resolveParentForNewElement(
       rect: { x: number; y: number; width: number; height: number },
-      hitElementId?: string | null
+      hitElementId?: string | null,
+      clientPointer?: { clientX: number; clientY: number } | null
     ): string | null {
       const findEl = (id: string): DesignElement | undefined =>
         this._activeElements().find((item) => item.id === id)
 
       if (hitElementId) {
-        let cur: DesignElement | undefined = findEl(hitElementId)
-        while (cur) {
-          if (isInside(rect, cur)) return cur.id
-          const pid = cur.parentId
-          cur = pid ? findEl(pid) : undefined
+        const px = clientPointer?.clientX
+        const py = clientPointer?.clientY
+        if (px != null && py != null) {
+          let cur: DesignElement | undefined = findEl(hitElementId)
+          while (cur) {
+            if (
+              canAddChildElements(cur) &&
+              pointInElementDataBox(px, py, cur.id)
+            ) {
+              return cur.id
+            }
+            const pid = cur.parentId
+            cur = pid ? findEl(pid) : undefined
+          }
+        } else {
+          let cur: DesignElement | undefined = findEl(hitElementId)
+          while (cur) {
+            if (canAddChildElements(cur) && isInside(rect, cur)) return cur.id
+            const pid = cur.parentId
+            cur = pid ? findEl(pid) : undefined
+          }
         }
       }
 
-      const candidates = this._activeElements().filter((item) => isInside(rect, item))
+      const candidates = this._activeElements().filter(
+        (item) => canAddChildElements(item) && isInside(rect, item)
+      )
       const parent = candidates.sort((a, b) => a.width * a.height - b.width * b.height)[0]
       return parent?.id ?? null
     },
@@ -314,17 +477,30 @@ export const useDesignStore = defineStore('design', {
         select?: boolean
         parentId?: string | null
         hitElementId?: string | null
+        /** 放置预设时的视口指针位置，用于 Flex 下按 DOM 命中解析父级（与数据 x/y 是否同步无关） */
+        clientPointer?: { clientX: number; clientY: number } | null
         skipHistory?: boolean
       }
     ): DesignElement {
       if (!options?.skipHistory && this.historyBatchDepth === 0) {
         this.pushDesignHistory()
       }
+      if (this.canvas.layoutMode === 'flex') {
+        this.ensureFlexPageShell({ skipHistory: true })
+      }
       let parentId: string | null
       if (options?.parentId !== undefined) {
         parentId = options.parentId
       } else {
-        parentId = this.resolveParentForNewElement(element, options?.hitElementId ?? null)
+        parentId = this.resolveParentForNewElement(
+          element,
+          options?.hitElementId ?? null,
+          options?.clientPointer ?? null
+        )
+      }
+      if (parentId === null && this.canvas.layoutMode === 'flex') {
+        const shell = this._activeElements().find((e) => e.parentId === null && e.isFlexPageShell)
+        if (shell) parentId = shell.id
       }
       const serial =
         this.workspaceMode === 'virtual-env' ? this.virtualNextSerial++ : this.standardNextSerial++
@@ -334,7 +510,14 @@ export const useDesignStore = defineStore('design', {
         serial,
         parentId
       }
+      /** 未显式带 domClass 时再走策略；复制/粘贴数据时保留已有或 duplicate 注入的类名 */
+      if (!nextElement.domClass?.trim()) {
+        nextElement.domClass = generateElementDomClass({ element: nextElement })
+      }
       this._activeElements().push(nextElement)
+      if (this.canvas.layoutMode === 'flex') {
+        applyFlexCanvasDefaults(nextElement)
+      }
       if (options?.select !== false) {
         this.selectedElementIds = [nextElement.id]
       }
@@ -360,6 +543,9 @@ export const useDesignStore = defineStore('design', {
       if (this.workspaceMode === 'virtual-env') {
         this.reloadVirtualFromStandard()
       }
+      if (this.canvas.layoutMode === 'flex') {
+        this.ensureFlexPageShell({ skipHistory: true })
+      }
     },
     /** 从设计稿文件还原（不记入撤销栈，并清空历史；权威数据写入标准工作区） */
     applyDesignProjectFile(data: DesignProjectFileV1): void {
@@ -378,8 +564,13 @@ export const useDesignStore = defineStore('design', {
         width: Math.max(1, Math.min(16000, Math.floor(Number(c.width)) || defaultCanvas.width)),
         height: Math.max(1, Math.min(16000, Math.floor(Number(c.height)) || defaultCanvas.height)),
         gridSize: Math.max(1, Math.floor(Number(c.gridSize)) || defaultCanvas.gridSize),
-        layoutMode: c.layoutMode === 'absolute' ? 'absolute' : 'grid',
-        zoom: Math.min(2, Math.max(0.25, Number(c.zoom) || 1))
+        layoutMode:
+          c.layoutMode === 'absolute'
+            ? 'absolute'
+            : c.layoutMode === 'flex'
+              ? 'flex'
+              : 'grid',
+        zoom: Math.min(2, Math.max(0.25, Number(c.zoom) || defaultCanvas.zoom))
       }
       this.selectedElementIds = []
       this.activePreset = null
@@ -410,6 +601,9 @@ export const useDesignStore = defineStore('design', {
         }
       } else {
         this.virtualEnv = defaultVirtualEnv()
+      }
+      if (this.canvas.layoutMode === 'flex') {
+        this.ensureFlexPageShell({ skipHistory: true })
       }
       this.historyMuted = false
       if (this.workspaceMode === 'virtual-env') {
@@ -486,6 +680,18 @@ export const useDesignStore = defineStore('design', {
       const oldY = target.y
       Object.assign(target, payload)
       if (payload.flexLayoutEnabled === true) {
+        target.gridLayoutForChildren = false
+        target.layoutCenterHorizontal = false
+        target.layoutCenterVertical = false
+        this._activeElements().forEach((el) => {
+          if (el.parentId === target.id) {
+            el.layoutCenterHorizontal = false
+            el.layoutCenterVertical = false
+          }
+        })
+      }
+      if (payload.gridLayoutForChildren === true) {
+        target.flexLayoutEnabled = false
         target.layoutCenterHorizontal = false
         target.layoutCenterVertical = false
         this._activeElements().forEach((el) => {
@@ -891,6 +1097,52 @@ export const useDesignStore = defineStore('design', {
       if (!this._activeElements().some((item) => item.id === pid)) return
       this.selectedElementIds = [pid]
     },
+    /**
+     * Flex 画布：与主轴上紧邻的另一子项交换槽位坐标（保持序列不变下整体平移子树）；
+     * 若两格 x/y 相同则再交换 serial，否则排序不变（表现为「点了没反应」）。
+     */
+    swapSelectedFlexSiblingAlongMainAxis(towardMainStart: boolean): void {
+      if (this.canvas.layoutMode !== 'flex') return
+      if (this.selectedElementIds.length !== 1) return
+      const id = this.selectedElementIds[0]
+      const els = this._activeElements()
+      const el = els.find((e) => e.id === id)
+      if (!el?.parentId) return
+      const parent = els.find((e) => e.id === el.parentId)
+      if (!parent?.flexLayoutEnabled) return
+      const ordered = sortSiblingsForRenderOrder(els, parent.id)
+      const idx = ordered.findIndex((e) => e.id === id)
+      if (idx < 0) return
+      const delta = flexVisualMainAxisNeighborDelta(parent.flexDirection ?? 'row', towardMainStart)
+      const j = idx + delta
+      if (j < 0 || j >= ordered.length) return
+      const perm = [...ordered]
+      const t = perm[idx]
+      perm[idx] = perm[j]
+      perm[j] = t
+      const slots = ordered.map((e) => ({ x: e.x, y: e.y }))
+      const ei = ordered[idx]
+      const ej = ordered[j]
+      this.beginHistoryBatch()
+      for (let k = 0; k < perm.length; k++) {
+        const sk = slots[k]
+        if (perm[k].x !== sk.x || perm[k].y !== sk.y) {
+          this.updateElement(perm[k].id, { x: sk.x, y: sk.y }, { skipHistory: true })
+        }
+      }
+      const desiredIds = perm.map((e) => e.id).join('\0')
+      const actualIds = (): string =>
+        sortSiblingsForRenderOrder(this._activeElements(), parent.id)
+          .map((e) => e.id)
+          .join('\0')
+      if (actualIds() !== desiredIds) {
+        const si = ei.serial
+        const sj = ej.serial
+        this.updateElement(ei.id, { serial: sj }, { skipHistory: true })
+        this.updateElement(ej.id, { serial: si }, { skipHistory: true })
+      }
+      this.endHistoryBatch()
+    },
     clearSelection(): void {
       this.selectedElementIds = []
     },
@@ -909,7 +1161,18 @@ export const useDesignStore = defineStore('design', {
         toDrop.add(id)
         this._activeElements().filter((item) => item.parentId === id).forEach((ch) => walk(ch.id))
       }
-      roots.forEach((id) => walk(id))
+      const els = this._activeElements()
+      for (const rid of roots) {
+        const rootEl = els.find((e) => e.id === rid)
+        if (rootEl?.isFlexPageShell) {
+          els.filter((c) => c.parentId === rootEl.id).forEach((c) => {
+            c.parentId = null
+          })
+          toDrop.add(rid)
+        } else {
+          walk(rid)
+        }
+      }
       this._setActiveElements(this._activeElements().filter((item) => !toDrop.has(item.id)))
       this.selectedElementIds = []
     },
@@ -928,12 +1191,13 @@ export const useDesignStore = defineStore('design', {
       for (const rid of roots) {
         const selected = this._activeElements().find((e) => e.id === rid)
         if (!selected) continue
-        const { id, serial, parentId, ...rest } = selected
+        const { id, serial, parentId, domClass: _dupDom, ...rest } = selected
         void id
         void serial
         const added = this.addElement(
           {
             ...rest,
+            domClass: elementDomClass(selected),
             x: rest.x + g,
             y: rest.y + g
           },
