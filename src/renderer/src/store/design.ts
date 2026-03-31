@@ -19,6 +19,7 @@ import {
   flexVisualMainAxisNeighborDelta,
   sortSiblingsForRenderOrder
 } from '@renderer/utils/elementFlex'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 
 const uid = (): string => `el-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 const isInside = (
@@ -95,6 +96,13 @@ function normalizeVirtualEnvPosition(p: unknown): VirtualEnvPosition {
 
 const DESIGN_HISTORY_MAX = 80
 
+/** 供设计稿 projectId 与「新建项目」使用；可从渲染层引用 */
+export function newDesignProjectUuid(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `proj-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
+}
+
 /** Pinia/Vue 下 elements 为 Proxy，structuredClone 会抛错；用 JSON 做深拷贝 */
 const cloneElementsPlain = (elements: DesignElement[]): DesignElement[] =>
   JSON.parse(JSON.stringify(elements)) as DesignElement[]
@@ -125,7 +133,12 @@ export const useDesignStore = defineStore('design', {
     layoutDragActive: false,
     layoutDragHistorySaved: false,
     workspaceMode: 'standard' as WorkspaceMode,
-    virtualEnv: defaultVirtualEnv()
+    virtualEnv: defaultVirtualEnv(),
+    /**
+     * 设计项目会话（与组件树挂载无关，避免切换设计/代码视图或路由重建后丢失绑定）
+     */
+    designProjectId: newDesignProjectUuid(),
+    designProjectFilePath: null as string | null
   }),
   getters: {
     /** 与单选兼容：取最后一次点击（多选时为主编辑项） */
@@ -354,6 +367,17 @@ export const useDesignStore = defineStore('design', {
     },
     setActiveView(view: ViewMode): void {
       this.activeView = view
+    },
+    setDesignProjectFilePath(path: string | null): void {
+      this.designProjectFilePath = path
+    },
+    setDesignProjectId(id: string): void {
+      this.designProjectId = id
+    },
+    /** 新建项目会话：新 id、解除磁盘路径绑定（画布清空由调用方 replaceElements 等完成） */
+    beginNewDesignProjectSession(): void {
+      this.designProjectFilePath = null
+      this.designProjectId = newDesignProjectUuid()
     },
     setActivePreset(preset: ElementPreset | null): void {
       this.activePreset = preset
@@ -828,8 +852,8 @@ export const useDesignStore = defineStore('design', {
       if (!t || t.kind !== 'table') {
         return { colW: [1], rowH: [1] }
       }
-      const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
-      const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
+      const rows = resolveTableRows(t.tableRows)
+      const cols = resolveTableCols(t.tableCols)
       const cells = this._activeElements().filter((c) => c.parentId === tableId && c.isTableCell)
       const colW: number[] = []
       const rowH: number[] = []
@@ -849,8 +873,8 @@ export const useDesignStore = defineStore('design', {
     _applyTableCellGeometry(tableId: string, colW: number[], rowH: number[]): void {
       const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
-      const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
-      const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
+      const rows = resolveTableRows(t.tableRows)
+      const cols = resolveTableCols(t.tableCols)
       if (colW.length !== cols || rowH.length !== rows) return
       const cells = this._activeElements().filter((c) => c.parentId === tableId && c.isTableCell)
       let y = t.y
@@ -880,8 +904,8 @@ export const useDesignStore = defineStore('design', {
     syncTableCellsLayout(tableId: string): void {
       const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
-      const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
-      const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
+      const rows = resolveTableRows(t.tableRows)
+      const cols = resolveTableCols(t.tableCols)
       const cells = this._activeElements().filter((c) => c.parentId === tableId && c.isTableCell)
       if (cells.length === 0) {
         this.initTableCells(tableId)
@@ -898,73 +922,89 @@ export const useDesignStore = defineStore('design', {
       if (rows > 0) rowH[rows - 1] = (rowH[rows - 1] ?? 0) + hErr
       this._applyTableCellGeometry(tableId, colW, rowH)
     },
-    /** 拖拽列分割线：edgeCol 为右侧列索引 1..cols-1，调整 edgeCol-1 与 edgeCol 两列宽度 */
-    nudgeTableColumnEdge(
-      tableId: string,
-      edgeCol: number,
-      deltaPx: number,
-      options?: { skipHistory?: boolean }
-    ): void {
-      if (!options?.skipHistory) this.pushDesignHistory()
+    /** 各列宽均分 table.width（一步撤销） */
+    equalizeTableColumnWidths(tableId: string): void {
       const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
-      const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
-      if (edgeCol < 1 || edgeCol >= cols || deltaPx === 0) return
-      const min = 12
-      let { colW, rowH } = this._tableColRowArraysFromCells(tableId)
-      const left = colW[edgeCol - 1] ?? 0
-      const right = colW[edgeCol] ?? 0
-      let nl = left + deltaPx
-      let nr = right - deltaPx
-      if (nl < min) {
-        nr -= min - nl
-        nl = min
-      }
-      if (nr < min) {
-        nl -= min - nr
-        nr = min
-      }
-      if (nl < min || nr < min) return
-      colW[edgeCol - 1] = nl
-      colW[edgeCol] = nr
+      this.pushDesignHistory()
+      const cols = resolveTableCols(t.tableCols)
+      const rows = resolveTableRows(t.tableRows)
+      const ew = t.width / cols
+      const colW = Array.from({ length: cols }, () => ew)
+      const { rowH } = this._tableColRowArraysFromCells(tableId)
+      if (rowH.length !== rows) return
       this._applyTableCellGeometry(tableId, colW, rowH)
     },
-    /** 拖拽行分割线：edgeRow 为下方行索引 1..rows-1 */
-    nudgeTableRowEdge(
-      tableId: string,
-      edgeRow: number,
-      deltaPx: number,
-      options?: { skipHistory?: boolean }
-    ): void {
-      if (!options?.skipHistory) this.pushDesignHistory()
+    /** 各行高均分 table.height（一步撤销） */
+    equalizeTableRowHeights(tableId: string): void {
       const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
-      const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
-      if (edgeRow < 1 || edgeRow >= rows || deltaPx === 0) return
-      const min = 12
-      let { colW, rowH } = this._tableColRowArraysFromCells(tableId)
-      const top = rowH[edgeRow - 1] ?? 0
-      const bot = rowH[edgeRow] ?? 0
-      let nt = top + deltaPx
-      let nb = bot - deltaPx
-      if (nt < min) {
-        nb -= min - nt
-        nt = min
+      this.pushDesignHistory()
+      const cols = resolveTableCols(t.tableCols)
+      const rows = resolveTableRows(t.tableRows)
+      const eh = t.height / rows
+      const rowH = Array.from({ length: rows }, () => eh)
+      const { colW } = this._tableColRowArraysFromCells(tableId)
+      if (colW.length !== cols) return
+      this._applyTableCellGeometry(tableId, colW, rowH)
+    },
+    /** 当前各列像素宽（来自首行单元格，供属性面板展示） */
+    getTableColumnWidths(tableId: string): number[] {
+      return this._tableColRowArraysFromCells(tableId).colW
+    },
+    /** 当前各行像素高（来自首列单元格） */
+    getTableRowHeights(tableId: string): number[] {
+      return this._tableColRowArraysFromCells(tableId).rowH
+    },
+    /**
+     * 按草稿列宽（非负数字，可为比例）缩放后写满 table.width，并写回所有单元格几何。
+     */
+    applyTableColumnWidths(tableId: string, draft: number[]): void {
+      const t = this._activeElements().find((item) => item.id === tableId)
+      if (!t || t.kind !== 'table') return
+      const cols = resolveTableCols(t.tableCols)
+      const rows = resolveTableRows(t.tableRows)
+      if (draft.length !== cols) return
+      this.pushDesignHistory()
+      let colW = draft.map((w) => Math.max(0, Number(w) || 0))
+      let sumW = colW.reduce((a, b) => a + b, 0)
+      if (sumW <= 0) {
+        colW = Array.from({ length: cols }, () => t.width / cols)
+        sumW = colW.reduce((a, b) => a + b, 0) || 1
       }
-      if (nb < min) {
-        nt -= min - nb
-        nb = min
+      colW = colW.map((w) => (w * t.width) / sumW)
+      const wErr = t.width - colW.reduce((a, b) => a + b, 0)
+      if (cols > 0) colW[cols - 1] = (colW[cols - 1] ?? 0) + wErr
+      const { rowH } = this._tableColRowArraysFromCells(tableId)
+      if (rowH.length !== rows) return
+      this._applyTableCellGeometry(tableId, colW, rowH)
+    },
+    /** 按草稿行高缩放后写满 table.height */
+    applyTableRowHeights(tableId: string, draft: number[]): void {
+      const t = this._activeElements().find((item) => item.id === tableId)
+      if (!t || t.kind !== 'table') return
+      const cols = resolveTableCols(t.tableCols)
+      const rows = resolveTableRows(t.tableRows)
+      if (draft.length !== rows) return
+      this.pushDesignHistory()
+      let rowH = draft.map((h) => Math.max(0, Number(h) || 0))
+      let sumH = rowH.reduce((a, b) => a + b, 0)
+      if (sumH <= 0) {
+        rowH = Array.from({ length: rows }, () => t.height / rows)
+        sumH = rowH.reduce((a, b) => a + b, 0) || 1
       }
-      if (nt < min || nb < min) return
-      rowH[edgeRow - 1] = nt
-      rowH[edgeRow] = nb
+      rowH = rowH.map((h) => (h * t.height) / sumH)
+      const hErr = t.height - rowH.reduce((a, b) => a + b, 0)
+      if (rows > 0) rowH[rows - 1] = (rowH[rows - 1] ?? 0) + hErr
+      const { colW } = this._tableColRowArraysFromCells(tableId)
+      if (colW.length !== cols) return
       this._applyTableCellGeometry(tableId, colW, rowH)
     },
     initTableCells(tableId: string): void {
       const t = this._activeElements().find((item) => item.id === tableId)
       if (!t || t.kind !== 'table') return
-      const rows = Math.max(1, Math.floor(Number(t.tableRows) || 5))
-      const cols = Math.max(1, Math.floor(Number(t.tableCols) || 5))
+      const rows = resolveTableRows(t.tableRows)
+      const cols = resolveTableCols(t.tableCols)
       const cw = t.width / cols
       const ch = t.height / rows
       for (let r = 0; r < rows; r += 1) {

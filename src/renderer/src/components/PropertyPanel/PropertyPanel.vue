@@ -21,6 +21,7 @@ import type {
   FlexWrap,
   JustifyContent
 } from '@renderer/types/design'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 
 const store = useDesignStore()
 
@@ -94,6 +95,82 @@ const timingModeHint = computed(() => {
   const m = selected.value?.animationTimingMode ?? 'visible'
   return ANIMATION_TIMING_OPTIONS.find((o) => o.value === m)?.hint ?? ''
 })
+
+const onTableTdPaddingInput = (e: Event): void => {
+  const s = selected.value
+  if (!s || s.kind !== 'table') return
+  const raw = (e.target as HTMLInputElement).value.trim()
+  if (raw === '') {
+    store.updateElement(s.id, { tableTdPadding: undefined })
+    return
+  }
+  const n = Math.max(0, Math.floor(Number(raw)))
+  if (!Number.isFinite(n)) return
+  store.updateElement(s.id, { tableTdPadding: n })
+}
+
+const onTableTrMinHeightInput = (e: Event): void => {
+  const s = selected.value
+  if (!s || s.kind !== 'table') return
+  const raw = (e.target as HTMLInputElement).value.trim()
+  if (raw === '') {
+    store.updateElement(s.id, { tableTrMinHeight: undefined })
+    return
+  }
+  const n = Math.max(0, Math.floor(Number(raw)))
+  if (!Number.isFinite(n)) return
+  store.updateElement(s.id, { tableTrMinHeight: n })
+}
+
+const selectedTableColWidths = computed(() => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return []
+  return store.getTableColumnWidths(t.id)
+})
+
+const selectedTableRowHeights = computed(() => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return []
+  return store.getTableRowHeights(t.id)
+})
+
+const selectedTableColIndicesForPanel = computed(() => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return []
+  return Array.from({ length: resolveTableCols(t.tableCols) }, (_, i) => i)
+})
+
+const selectedTableRowIndicesForPanel = computed(() => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return []
+  return Array.from({ length: resolveTableRows(t.tableRows) }, (_, i) => i)
+})
+
+const onTableColWidthChange = (colIndex: number, e: Event): void => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return
+  const n = Math.max(0, Number((e.target as HTMLInputElement).value))
+  if (!Number.isFinite(n)) return
+  const cols = resolveTableCols(t.tableCols)
+  const cur = store.getTableColumnWidths(t.id)
+  if (cur.length !== cols) return
+  const next = [...cur]
+  next[colIndex] = n
+  store.applyTableColumnWidths(t.id, next)
+}
+
+const onTableRowHeightChange = (rowIndex: number, e: Event): void => {
+  const t = selected.value
+  if (!t || t.kind !== 'table') return
+  const n = Math.max(0, Number((e.target as HTMLInputElement).value))
+  if (!Number.isFinite(n)) return
+  const rows = resolveTableRows(t.tableRows)
+  const cur = store.getTableRowHeights(t.id)
+  if (cur.length !== rows) return
+  const next = [...cur]
+  next[rowIndex] = n
+  store.applyTableRowHeights(t.id, next)
+}
 
 const update = <K extends keyof DesignElement>(
   key: K,
@@ -1104,7 +1181,7 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
         <label>
           行数
           <NumericInput
-            :model-value="selected.tableRows ?? 5"
+            :model-value="resolveTableRows(selected.tableRows)"
             :owner-element-id="selected.id"
             :min="1"
             @update:model-value="(v, oid) => update('tableRows', Math.max(1, Math.floor(v)), oid)"
@@ -1113,29 +1190,154 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
         <label>
           列数
           <NumericInput
-            :model-value="selected.tableCols ?? 5"
+            :model-value="resolveTableCols(selected.tableCols)"
             :owner-element-id="selected.id"
             :min="1"
             @update:model-value="(v, oid) => update('tableCols', Math.max(1, Math.floor(v)), oid)"
           />
         </label>
         <label>
-          边框颜色
+          单元格线颜色（td 边框）
           <input
             :value="selected.borderColor ?? '#d0d0d0'"
             @input="update('borderColor', ($event.target as HTMLInputElement).value)"
           />
         </label>
-        <label class="check">
-          <input
-            type="checkbox"
-            :checked="!!selected.tableResizeEnabled"
-            @change="
-              update('tableResizeEnabled', ($event.target as HTMLInputElement).checked)
-            "
-          />
-          调整
-        </label>
+        <div class="table-advanced-panel">
+          <div class="group-title">单元格与行尺寸 / 边框</div>
+          <p class="field-hint">
+            作用于整张表的所有 td / tr；内边距留空表示按布局默认（Flex 2px，绝对/网格 0px）。
+          </p>
+          <div class="table-layout-actions">
+            <button
+              type="button"
+              class="table-action-btn"
+              @click="store.equalizeTableColumnWidths(selected.id)"
+            >
+              列宽均分
+            </button>
+            <button
+              type="button"
+              class="table-action-btn"
+              @click="store.equalizeTableRowHeights(selected.id)"
+            >
+              行高均分
+            </button>
+          </div>
+          <div class="table-per-axis-panel">
+            <div class="table-per-axis-title">逐列宽度</div>
+            <p class="field-hint">
+              填写每列的相对权重（单位可理解为 px 比例），确认后按比例缩放，使总宽等于当前表格宽度。
+            </p>
+            <div class="table-dim-inputs">
+              <label
+                v-for="c in selectedTableColIndicesForPanel"
+                :key="'colw-' + c"
+                class="table-dim-label"
+              >
+                列 {{ c + 1 }}
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  class="table-optional-num"
+                  :value="Math.round(selectedTableColWidths[c] ?? 0)"
+                  @change="onTableColWidthChange(c, $event)"
+                />
+              </label>
+            </div>
+            <div class="table-per-axis-title">逐行高度</div>
+            <p class="field-hint">
+              同上，总高等于当前表格高度。
+            </p>
+            <div class="table-dim-inputs">
+              <label
+                v-for="r in selectedTableRowIndicesForPanel"
+                :key="'rowh-' + r"
+                class="table-dim-label"
+              >
+                行 {{ r + 1 }}
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  class="table-optional-num"
+                  :value="Math.round(selectedTableRowHeights[r] ?? 0)"
+                  @change="onTableRowHeightChange(r, $event)"
+                />
+              </label>
+            </div>
+          </div>
+          <label>
+            td 统一内边距 (px)
+            <input
+              type="number"
+              min="0"
+              step="1"
+              class="table-optional-num"
+              :value="selected.tableTdPadding ?? ''"
+              placeholder="默认"
+              @input="onTableTdPaddingInput"
+            />
+          </label>
+          <label>
+            td 边框宽度 (px)
+            <NumericInput
+              :model-value="selected.tableTdBorderWidth ?? 1"
+              :owner-element-id="selected.id"
+              :min="0"
+              @update:model-value="(v, oid) => update('tableTdBorderWidth', v, oid)"
+            />
+          </label>
+          <label>
+            td 边框样式
+            <select
+              class="common-select"
+              :value="selected.tableTdBorderStyle ?? 'solid'"
+              @change="
+                update(
+                  'tableTdBorderStyle',
+                  ($event.target as HTMLSelectElement).value as DesignElement['tableTdBorderStyle']
+                )
+              "
+            >
+              <option value="none">无</option>
+              <option value="solid">实线</option>
+              <option value="dashed">虚线</option>
+              <option value="dotted">点线</option>
+            </select>
+          </label>
+          <label>
+            td 文字颜色
+            <div class="color-row">
+              <input
+                type="color"
+                :value="selected.tableCellTextColor || '#f1f4fb'"
+                class="color-picker"
+                @input="update('tableCellTextColor', ($event.target as HTMLInputElement).value)"
+              />
+              <input
+                type="text"
+                class="color-input"
+                :value="selected.tableCellTextColor ?? ''"
+                placeholder="不设则不写 color"
+                @input="update('tableCellTextColor', ($event.target as HTMLInputElement).value)"
+              />
+            </div>
+          </label>
+          <label>
+            tr 最小高度 (px)
+            <input
+              type="number"
+              min="0"
+              step="1"
+              class="table-optional-num"
+              :value="selected.tableTrMinHeight ?? ''"
+              placeholder="不设"
+              @input="onTableTrMinHeightInput"
+            />
+          </label>
+        </div>
         <div class="table-stripe-panel">
           <div class="table-stripe-subtabs" role="tablist">
             <button
@@ -1484,6 +1686,93 @@ const setMarginUse = (key: MarUseKey, checked: boolean): void => {
   margin-bottom: 12px;
   padding-left: 4px;
   border-left: 3px solid #4f7cff;
+}
+
+.table-advanced-panel {
+  margin-top: 14px;
+  padding: 12px;
+  background: #1a2029;
+  border: 1px solid #2f3d52;
+  border-radius: 8px;
+}
+
+.table-advanced-panel .group-title {
+  margin-top: 0;
+  border-left-color: #39b56a;
+}
+
+.table-advanced-panel label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: #aeb9cc;
+}
+
+.table-per-axis-panel {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2a3545;
+}
+
+.table-per-axis-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9aa8c0;
+  margin: 10px 0 6px;
+}
+
+.table-per-axis-panel .field-hint {
+  margin-bottom: 8px;
+}
+
+.table-dim-inputs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px 10px;
+  margin-bottom: 4px;
+}
+
+.table-dim-label {
+  display: block;
+  margin-bottom: 0 !important;
+  font-size: 11px;
+  color: #aeb9cc;
+}
+
+.table-layout-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.table-action-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid #3d4d64;
+  background: #232b38;
+  color: #d7deec;
+  cursor: pointer;
+}
+
+.table-action-btn:hover {
+  border-color: #4f7cff;
+  color: #f0f4ff;
+}
+
+.table-optional-num {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 1px solid #30384a;
+  border-radius: 6px;
+  background: #0f141c;
+  color: #d7deec;
+  font-size: 12px;
+  box-sizing: border-box;
 }
 
 .table-stripe-panel {

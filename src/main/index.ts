@@ -141,11 +141,12 @@ app.whenReady().then(async () => {
     return { ok: true, canceled: false, filePath, content }
   })
 
-  ipcMain.handle('save-design-project', async (_, payload: { content: string; filePath?: string }) => {
+  ipcMain.handle('save-design-project', async (_, payload: { content: string; filePath: string }) => {
     const designSavesDir = getDesignSavesDir()
     await mkdir(designSavesDir, { recursive: true })
-    
-    let targetPath = payload.filePath
+
+    const raw = typeof payload.filePath === 'string' ? payload.filePath.trim() : ''
+    let targetPath = raw.length > 0 ? raw : undefined
     if (!targetPath) {
       const { canceled, filePath } = await dialog.showSaveDialog({
         title: '保存设计稿',

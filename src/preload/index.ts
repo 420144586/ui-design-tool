@@ -14,8 +14,12 @@ const api = {
       previewDir: string
     }>,
   importVueFile: () => electronAPI.ipcRenderer.invoke('import-vue-file'),
+  /** filePath 传实际路径或空字符串；勿传 undefined，否则 IPC 结构化克隆可能省略键导致主进程误判为未绑定 */
   saveDesignProject: (content: string, filePath?: string) =>
-    electronAPI.ipcRenderer.invoke('save-design-project', { content, filePath }),
+    electronAPI.ipcRenderer.invoke('save-design-project', {
+      content,
+      filePath: typeof filePath === 'string' ? filePath : ''
+    }),
   loadDesignProject: () => electronAPI.ipcRenderer.invoke('load-design-project')
 }
 

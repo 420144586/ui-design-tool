@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { DesignElement, LayoutMode } from '@renderer/types/design'
 import DButton from '@renderer/D-components/DButton.vue'
 import DInput from '@renderer/D-components/DInput.vue'
-import { useDesignStore } from '@renderer/store/design'
 import { cssBackgroundFill } from '@renderer/utils/elementBackground'
 import { applyBoxBorderToStyle, isBorderSideEnabled } from '@renderer/utils/elementBorder'
 import { applyLayoutCenterToInlineStyle, gridPlacementForElement } from '@renderer/utils/layoutCenter'
@@ -11,6 +10,7 @@ import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/util
 import { applyPaddingMarginToStyle, effectivePaddingInsets } from '@renderer/utils/elementSpacing'
 import { applyFlexContainerToStyle, sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
 import { elementDomClass } from '@renderer/utils/elementClassStrategy'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 
 defineOptions({ name: 'DesignTreeNode' })
 
@@ -32,62 +32,6 @@ const emit = defineEmits<{
   select: [id: string, event?: MouseEvent]
   mousedown: [event: MouseEvent, element: DesignElement]
 }>()
-
-const store = useDesignStore()
-
-const colDrag = ref<{ edgeCol: number; lastX: number } | null>(null)
-const rowDrag = ref<{ edgeRow: number; lastY: number } | null>(null)
-
-const onColMove = (e: MouseEvent): void => {
-  const d = colDrag.value
-  if (!d || props.element.kind !== 'table') return
-  const dx = e.clientX - d.lastX
-  d.lastX = e.clientX
-  if (dx !== 0) store.nudgeTableColumnEdge(props.element.id, d.edgeCol, dx, { skipHistory: true })
-}
-
-const onColUp = (): void => {
-  colDrag.value = null
-  window.removeEventListener('mousemove', onColMove)
-}
-
-const onColResizeStart = (edgeCol: number, e: MouseEvent): void => {
-  if (props.element.kind !== 'table') return
-  e.stopPropagation()
-  e.preventDefault()
-  store.pushDesignHistory()
-  colDrag.value = { edgeCol, lastX: e.clientX }
-  window.addEventListener('mousemove', onColMove)
-  window.addEventListener('mouseup', onColUp, { once: true })
-}
-
-const onRowMove = (e: MouseEvent): void => {
-  const d = rowDrag.value
-  if (!d || props.element.kind !== 'table') return
-  const dy = e.clientY - d.lastY
-  d.lastY = e.clientY
-  if (dy !== 0) store.nudgeTableRowEdge(props.element.id, d.edgeRow, dy, { skipHistory: true })
-}
-
-const onRowUp = (): void => {
-  rowDrag.value = null
-  window.removeEventListener('mousemove', onRowMove)
-}
-
-const onRowResizeStart = (edgeRow: number, e: MouseEvent): void => {
-  if (props.element.kind !== 'table') return
-  e.stopPropagation()
-  e.preventDefault()
-  store.pushDesignHistory()
-  rowDrag.value = { edgeRow, lastY: e.clientY }
-  window.addEventListener('mousemove', onRowMove)
-  window.addEventListener('mouseup', onRowUp, { once: true })
-}
-
-onUnmounted(() => {
-  window.removeEventListener('mousemove', onColMove)
-  window.removeEventListener('mousemove', onRowMove)
-})
 
 const children = computed(() => sortSiblingsForRenderOrder(props.elements, props.element.id))
 
@@ -182,6 +126,26 @@ const nodeStyle = computed(() => {
     }
   }
 
+  /** Flex 画布：表格统一相对定位 + flex 子项（避免落入 absolute 叠放，含嵌在列等容器内） */
+  if (props.element.kind === 'table' && props.layoutMode === 'flex') {
+    const style: Record<string, string> = { ...commonStyle }
+    const wh = cssWidthHeightStrings(props.element)
+    style.position = 'relative'
+    style.width = wh.width
+    style.height = wh.height
+    style.flexShrink = '0'
+    applyParentBoundsClamp(style, props.element)
+    if (
+      !props.element.backgroundTransparent &&
+      String(props.element.background ?? '').trim() &&
+      String(props.element.background ?? '').trim().toLowerCase() !== 'transparent'
+    ) {
+      style.background = cssBackgroundFill(props.element)
+    }
+    style.opacity = String(props.element.opacity)
+    return style
+  }
+
   /** 父级启用自定义 flex 时，子项参与主轴排版（非图片/Label 特殊结构） */
   const parentFlex =
     props.parent?.flexLayoutEnabled === true &&
@@ -198,8 +162,6 @@ const nodeStyle = computed(() => {
     const wh = cssWidthHeightStrings(props.element)
     const isDComponent = props.element.kind === 'dcomponent'
     style.position = 'relative'
-    style.left = '0'
-    style.top = '0'
     style.width = wh.width
     style.height = wh.height
     style.flexShrink = '0'
@@ -214,8 +176,6 @@ const nodeStyle = computed(() => {
     const style: Record<string, string> = { ...commonStyle }
     const isDComponent = props.element.kind === 'dcomponent'
     style.position = 'relative'
-    style.left = '0'
-    style.top = '0'
     style.width = '100%'
     style.flex = '1 1 0'
     style.minWidth = '0'
@@ -238,8 +198,6 @@ const nodeStyle = computed(() => {
     style.zIndex = String(props.element.serial)
     /** 画布容器：满铺 .layer，与画布可视区域完全重叠（数据宽高仍用于导出与命中） */
     if (props.element.isFlexPageShell) {
-      style.left = '0'
-      style.top = '0'
       style.width = '100%'
       style.height = '100%'
       style.flex = '1 1 auto'
@@ -249,8 +207,6 @@ const nodeStyle = computed(() => {
       style.alignSelf = 'stretch'
     } else {
       style.flexShrink = '0'
-      style.left = `${relativeX.value}px`
-      style.top = `${relativeY.value}px`
       style.width = wh.width
       style.height = wh.height
     }
@@ -381,17 +337,16 @@ const dcomponentTypographyStyle = computed((): Record<string, string> => {
   return st
 })
 
-const tableRows = computed(() =>
-  Math.max(1, Math.floor(Number(props.element.tableRows) || 5))
+/** 表格行列数（与 store / 导出一致） */
+const tableRowCount = computed(() => resolveTableRows(props.element.tableRows))
+const tableColCount = computed(() => resolveTableCols(props.element.tableCols))
+/** 0 .. n-1，模板用 v-for 避免把「行数」误当作可迭代对象 */
+const tableRowIndices = computed(() =>
+  Array.from({ length: tableRowCount.value }, (_, i) => i)
 )
-const tableCols = computed(() =>
-  Math.max(1, Math.floor(Number(props.element.tableCols) || 5))
+const tableColIndices = computed(() =>
+  Array.from({ length: tableColCount.value }, (_, i) => i)
 )
-const tableBorderColor = computed(() => props.element.borderColor ?? '#d0d0d0')
-const tableStyle = computed(() => ({
-  '--table-border': tableBorderColor.value
-}))
-
 const tableCellMap = computed(() => {
   const m = new Map<string, DesignElement>()
   if (props.element.kind !== 'table') return m
@@ -410,56 +365,34 @@ const tableCellChildren = (cell: DesignElement): DesignElement[] =>
     .filter((item) => item.parentId === cell.id)
     .sort((a, b) => a.y - b.y || a.x - b.x)
 
-const showTableResizeHandles = computed(
-  () =>
-    props.element.kind === 'table' &&
-    props.selectedElementIds.includes(props.element.id) &&
-    !!props.element.tableResizeEnabled
-)
-
-/** 列分割线位置（%），长度 cols-1 */
-const colResizeHandleLeftPct = computed(() => {
-  if (props.element.kind !== 'table') return [] as number[]
-  const cols = tableCols.value
-  const tw = Math.max(1, props.element.width)
-  const ws: number[] = []
-  for (let c = 0; c < cols; c += 1) {
-    const cell = tableCellAt(0, c)
-    ws.push(cell?.width && cell.width > 0 ? cell.width : tw / cols)
+/** 与导出一致的 td 边框、内边距、文字色 */
+function applyTableTdSharedVisual(st: Record<string, string>, cell: DesignElement): void {
+  const borderColor = props.element.borderColor ?? '#d0d0d0'
+  const bwRaw = props.element.tableTdBorderWidth
+  const bw =
+    bwRaw != null && Number.isFinite(bwRaw) && bwRaw >= 0 ? Math.floor(bwRaw) : 1
+  const bs = props.element.tableTdBorderStyle ?? 'solid'
+  if (bw === 0 || bs === 'none') st.border = 'none'
+  else st.border = `${bw}px ${bs} ${borderColor}`
+  const tc = props.element.tableCellTextColor?.trim()
+  if (tc) st.color = tc
+  applyPaddingMarginToStyle(st, cell)
+  const tp = props.element.tableTdPadding
+  if (tp != null && Number.isFinite(tp) && tp >= 0) {
+    st.padding = `${Math.floor(tp)}px`
+  } else if (!st.padding && !st.paddingTop) {
+    st.padding = props.layoutMode === 'flex' ? '2px' : '0px'
   }
-  const sum = ws.reduce((a, b) => a + b, 0) || 1
-  const out: number[] = []
-  let acc = 0
-  for (let i = 0; i < cols - 1; i += 1) {
-    acc += (ws[i]! / sum) * 100
-    out.push(acc)
-  }
-  return out
-})
-
-const rowResizeHandleTopPct = computed(() => {
-  if (props.element.kind !== 'table') return [] as number[]
-  const rows = tableRows.value
-  const th = Math.max(1, props.element.height)
-  const hs: number[] = []
-  for (let r = 0; r < rows; r += 1) {
-    const cell = tableCellAt(r, 0)
-    hs.push(cell?.height && cell.height > 0 ? cell.height : th / rows)
-  }
-  const sum = hs.reduce((a, b) => a + b, 0) || 1
-  const out: number[] = []
-  let acc = 0
-  for (let i = 0; i < rows - 1; i += 1) {
-    acc += (hs[i]! / sum) * 100
-    out.push(acc)
-  }
-  return out
-})
+}
 
 function tableTrStyle(row: number): Record<string, string> {
   if (props.element.kind !== 'table') return {}
   const isOddRow = row % 2 === 0
   const st: Record<string, string> = {}
+  const trMin = props.element.tableTrMinHeight
+  if (trMin != null && Number.isFinite(trMin) && trMin > 0) {
+    st.minHeight = `${Math.floor(trMin)}px`
+  }
   if (props.element.tableTrOddBgEnabled && isOddRow) {
     st.background = props.element.tableTrOddBg?.trim() || '#e8eef5'
   } else if (props.element.tableTrEvenBgEnabled && !isOddRow) {
@@ -472,10 +405,11 @@ function tableTdStyle(row: number, col: number): Record<string, string> {
   if (props.element.kind !== 'table') return {}
   const cell = tableCellAt(row, col)
   if (!cell) return {}
+  const st: Record<string, string> = {}
   const tw = Math.max(1, props.element.width)
   const th = Math.max(1, props.element.height)
-  const cols = tableCols.value
-  const rows = tableRows.value
+  const cols = tableColCount.value
+  const rows = tableRowCount.value
   const ws: number[] = []
   for (let c = 0; c < cols; c += 1) {
     const cl = tableCellAt(0, c)
@@ -490,11 +424,9 @@ function tableTdStyle(row: number, col: number): Record<string, string> {
   const sumH = hs.reduce((a, b) => a + b, 0) || 1
   const wPct = ((ws[col] ?? 0) / sumW) * 100
   const hPct = ((hs[row] ?? 0) / sumH) * 100
-  const st: Record<string, string> = {
-    width: `${wPct}%`,
-    height: `${hPct}%`
-  }
-  applyPaddingMarginToStyle(st, cell)
+  st.width = `${wPct}%`
+  st.height = `${hPct}%`
+  applyTableTdSharedVisual(st, cell)
   const colOdd = col % 2 === 0
   if (props.element.tableTdOddBgEnabled && colOdd) {
     st.background = props.element.tableTdOddBg?.trim() || '#e8eef5'
@@ -509,13 +441,18 @@ function tableTdSlotWrapperStyle(row: number, col: number): Record<string, strin
   const base: Record<string, string> = {}
   if (cell?.flexLayoutEnabled) {
     applyFlexContainerToStyle(base, cell)
-    base.width = '100%'
-    base.height = '100%'
-    base.minHeight = '0'
     base.boxSizing = 'border-box'
     base.position = 'relative'
     base.overflow =
       cell.flexWrap === 'wrap' || cell.flexWrap === 'wrap-reverse' ? 'auto' : 'hidden'
+    if (props.layoutMode === 'flex') {
+      base.minWidth = '0'
+      base.minHeight = '0'
+    } else {
+      base.width = '100%'
+      base.height = '100%'
+      base.minHeight = '0'
+    }
   }
   return base
 }
@@ -560,17 +497,42 @@ const childContainerStyle = computed(() => {
   const style: Record<string, string> = {}
   if (children.value.length === 0) return style
   if (props.element.flexLayoutEnabled) {
-    style.position = 'absolute'
-    applyChildrenLayerInset(style, props.element)
     applyFlexContainerToStyle(style, props.element)
     style.boxSizing = 'border-box'
     style.overflow =
       props.element.flexWrap === 'wrap' || props.element.flexWrap === 'wrap-reverse'
         ? 'auto'
         : 'hidden'
+    if (props.layoutMode === 'flex') {
+      style.position = 'relative'
+      style.flex = '1 1 auto'
+      style.minWidth = '0'
+      style.minHeight = '0'
+      style.width = '100%'
+      style.height = '100%'
+      style.alignSelf = 'stretch'
+      return style
+    }
+    style.position = 'absolute'
+    applyChildrenLayerInset(style, props.element)
     return style
   }
   if (props.element.kind === 'column') {
+    if (props.layoutMode === 'flex') {
+      style.position = 'relative'
+      style.flex = '1 1 auto'
+      style.minWidth = '0'
+      style.minHeight = '0'
+      style.width = '100%'
+      style.height = '100%'
+      style.alignSelf = 'stretch'
+      style.display = 'flex'
+      style.flexDirection = 'column'
+      style.alignItems = 'stretch'
+      style.boxSizing = 'border-box'
+      style.overflow = 'hidden'
+      return style
+    }
     style.position = 'absolute'
     applyChildrenLayerInset(style, props.element)
     style.display = 'flex'
@@ -581,6 +543,21 @@ const childContainerStyle = computed(() => {
     return style
   }
   if (props.element.kind === 'image' && props.element.type === 'div') {
+    if (props.layoutMode === 'flex') {
+      style.position = 'relative'
+      style.flex = '1 1 auto'
+      style.minWidth = '0'
+      style.minHeight = '0'
+      style.width = '100%'
+      style.height = '100%'
+      style.alignSelf = 'stretch'
+      style.display = 'flex'
+      style.flexDirection = 'row'
+      style.alignItems = 'center'
+      style.gap = `${props.element.gap ?? 10}px`
+      style.boxSizing = 'border-box'
+      return style
+    }
     style.position = 'absolute'
     applyChildrenLayerInset(style, props.element)
     style.display = 'flex'
@@ -622,65 +599,55 @@ const childContainerStyle = computed(() => {
     class="designer-element designer-element--table"
     :data-element-id="element.id"
     :class="{ active: selectedElementIds.includes(element.id) }"
-    :style="{ ...nodeStyle, ...tableStyle }"
+    :style="nodeStyle"
     @mousedown.stop="emit('mousedown', $event, element)"
   >
-    <div class="designer-table-shell">
-      <table class="designer-table">
-        <tr
-          v-for="ri in tableRows"
-          :key="'tr-' + ri"
-          :style="tableTrStyle(ri - 1)"
-        >
-          <td
-            v-for="ci in tableCols"
-            :key="'td-' + ri + '-' + ci"
-            :style="tableTdStyle(ri - 1, ci - 1)"
+    <div
+      class="designer-table-shell"
+      :class="{ 'designer-table-shell--flex-native': layoutMode === 'flex' }"
+    >
+      <table
+        class="designer-table"
+        :class="{ 'designer-table--flex-native': layoutMode === 'flex' }"
+      >
+        <tbody>
+          <tr
+            v-for="r in tableRowIndices"
+            :key="'tr-' + r"
+            :style="tableTrStyle(r)"
           >
-            <div
-              v-if="tableCellAt(ri - 1, ci - 1)"
-              class="designer-td-slot"
-              :style="tableTdSlotWrapperStyle(ri - 1, ci - 1)"
-              :data-element-id="tableCellAt(ri - 1, ci - 1)!.id"
-              @mousedown="onTableCellSlotMouseDown"
-              @click.self="onTableCellSlotClick($event, ri - 1, ci - 1)"
+            <td
+              v-for="c in tableColIndices"
+              :key="'td-' + r + '-' + c"
+              :style="tableTdStyle(r, c)"
             >
-              <DesignTreeNode
-                v-for="sub in tableCellChildren(tableCellAt(ri - 1, ci - 1)!)"
-                :key="sub.id"
-                :element="sub"
-                :elements="elements"
-                :selected-element-ids="selectedElementIds"
-                :layout-mode="layoutMode"
-                :grid-size="gridSize"
-                :surface-width="surfaceWidth"
-                :surface-height="surfaceHeight"
-                :parent="tableCellAt(ri - 1, ci - 1)"
-                @select="(id, ev) => emit('select', id, ev)"
-                @mousedown="(event, node) => emit('mousedown', event, node)"
-              />
-            </div>
-          </td>
-        </tr>
+              <div
+                v-if="tableCellAt(r, c)"
+                class="designer-td-slot"
+                :style="tableTdSlotWrapperStyle(r, c)"
+                :data-element-id="tableCellAt(r, c)!.id"
+                @mousedown="onTableCellSlotMouseDown"
+                @click.self="onTableCellSlotClick($event, r, c)"
+              >
+                <DesignTreeNode
+                  v-for="sub in tableCellChildren(tableCellAt(r, c)!)"
+                  :key="sub.id"
+                  :element="sub"
+                  :elements="elements"
+                  :selected-element-ids="selectedElementIds"
+                  :layout-mode="layoutMode"
+                  :grid-size="gridSize"
+                  :surface-width="surfaceWidth"
+                  :surface-height="surfaceHeight"
+                  :parent="tableCellAt(r, c)"
+                  @select="(id, ev) => emit('select', id, ev)"
+                  @mousedown="(event, node) => emit('mousedown', event, node)"
+                />
+              </div>
+            </td>
+          </tr>
+        </tbody>
       </table>
-      <div v-if="showTableResizeHandles" class="table-resize-overlay" aria-hidden="true">
-        <div
-          v-for="(pct, idx) in colResizeHandleLeftPct"
-          :key="'col-edge-' + idx"
-          class="table-resize-handle table-resize-handle--col"
-          :style="{ left: pct + '%' }"
-          title="拖拽调整列宽"
-          @mousedown="onColResizeStart(idx + 1, $event)"
-        />
-        <div
-          v-for="(pct, idx) in rowResizeHandleTopPct"
-          :key="'row-edge-' + idx"
-          class="table-resize-handle table-resize-handle--row"
-          :style="{ top: pct + '%' }"
-          title="拖拽调整行高"
-          @mousedown="onRowResizeStart(idx + 1, $event)"
-        />
-      </div>
     </div>
   </div>
   <div
@@ -823,6 +790,12 @@ const childContainerStyle = computed(() => {
   min-height: 0;
 }
 
+/** Flex 画布：表壳填满元素盒，表格高度与导出一致 */
+.designer-table-shell--flex-native {
+  height: 100%;
+  min-height: 0;
+}
+
 .designer-table {
   width: 100%;
   height: 100%;
@@ -830,49 +803,16 @@ const childContainerStyle = computed(() => {
   table-layout: fixed;
 }
 
+.designer-table--flex-native {
+  width: 100%;
+  height: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
 .designer-table td {
-  border: 1px solid var(--table-border, #d0d0d0);
   vertical-align: top;
-  padding: 0;
-}
-
-.table-resize-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 40;
-}
-
-.table-resize-handle {
-  pointer-events: auto;
-  position: absolute;
-  box-sizing: border-box;
-}
-
-.table-resize-handle--col {
-  top: 0;
-  bottom: 0;
-  width: 10px;
-  transform: translateX(-50%);
-  cursor: col-resize;
-  background: transparent;
-}
-
-.table-resize-handle--col:hover {
-  background: rgba(127, 212, 252, 0.35);
-}
-
-.table-resize-handle--row {
-  left: 0;
-  right: 0;
-  height: 10px;
-  transform: translateY(-50%);
-  cursor: row-resize;
-  background: transparent;
-}
-
-.table-resize-handle--row:hover {
-  background: rgba(127, 212, 252, 0.35);
+  /** 边框与 padding 由内联样式与属性面板「表格单元格」一致 */
 }
 
 .designer-td-slot {
@@ -882,6 +822,12 @@ const childContainerStyle = computed(() => {
   min-height: 100%;
   box-sizing: border-box;
   pointer-events: auto;
+}
+
+.designer-table--flex-native .designer-td-slot {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
 .designer-td-slot :deep(.designer-element) {

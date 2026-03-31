@@ -5,6 +5,7 @@ import {
   BASIC_ELEMENT_PRESETS,
   COMPONENT_LIBRARY_PRESETS
 } from '@renderer/data/elementLibraryPresets'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 
 const store = useDesignStore()
 
@@ -38,7 +39,7 @@ const selectPreset = (item: ElementPreset): void => {
           {{ element.width }} × {{ element.height }}
           <template v-if="element.kind === 'image' && element.hasLabel"> · Label</template>
           <template v-if="element.kind === 'table'">
-            · {{ element.tableRows }}×{{ element.tableCols }}
+            · {{ resolveTableRows(element.tableRows) }}×{{ resolveTableCols(element.tableCols) }}
           </template>
         </div>
       </button>

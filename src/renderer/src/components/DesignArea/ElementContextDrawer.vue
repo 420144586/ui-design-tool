@@ -2,6 +2,7 @@
 import { computed, nextTick, onUnmounted, watch } from 'vue'
 import type { ElementPreset } from '@renderer/types/design'
 import { BASIC_ELEMENT_PRESETS, COMPONENT_LIBRARY_PRESETS } from '@renderer/data/elementLibraryPresets'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 
 const props = defineProps<{
   visible: boolean
@@ -83,7 +84,7 @@ const panelPositionStyle = computed((): Record<string, string> => {
               {{ el.width }} × {{ el.height }}
               <template v-if="el.kind === 'image' && el.hasLabel"> · Label</template>
               <template v-if="el.kind === 'table'">
-                · {{ el.tableRows }}×{{ el.tableCols }}
+                · {{ resolveTableRows(el.tableRows) }}×{{ resolveTableCols(el.tableCols) }}
               </template>
             </span>
           </button>

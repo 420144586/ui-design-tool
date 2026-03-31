@@ -9,11 +9,13 @@ import { boxBorderCssLines } from '@renderer/utils/elementBorder'
 import {
   gridPlacementForElement,
   layoutCenterCssForAbsolute,
+  layoutCenterCssForFlexRootItem,
   layoutCenterCssForGrid
 } from '@renderer/utils/layoutCenter'
 import { cssWidthHeightStrings, resolveElementLayoutPxBox } from '@renderer/utils/elementLayoutSize'
 import { marginCssDecl, paddingCssDecl } from '@renderer/utils/elementSpacing'
 import { flexContainerCssLines, sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 import { elementDomClass } from '@renderer/utils/elementClassStrategy'
 
 const sortByLayer = (elements: DesignElement[]): DesignElement[] =>
@@ -45,6 +47,41 @@ export const tableStripingCss = (element: DesignElement): string => {
 
 const indent = (level: number): string => '  '.repeat(level)
 
+/** 表格：统一 td 边框、内边距、文字色（flex 与 fixed 共用） */
+function tableTdSharedCssLines(
+  element: DesignElement,
+  borderColor: string,
+  useFlexNativeTable: boolean
+): string[] {
+  const pad =
+    element.tableTdPadding != null &&
+    Number.isFinite(element.tableTdPadding) &&
+    element.tableTdPadding >= 0
+      ? Math.floor(element.tableTdPadding)
+      : useFlexNativeTable
+        ? 2
+        : 0
+  const bwRaw = element.tableTdBorderWidth
+  const bw =
+    bwRaw != null && Number.isFinite(bwRaw) && bwRaw >= 0 ? Math.floor(bwRaw) : 1
+  const bs = element.tableTdBorderStyle ?? 'solid'
+  const lines: string[] = []
+  if (bw === 0 || bs === 'none') lines.push('  border: none;')
+  else lines.push(`  border: ${bw}px ${bs} ${borderColor};`)
+  lines.push(`  padding: ${pad}px;`)
+  lines.push('  vertical-align: top;')
+  if (!useFlexNativeTable) lines.push('  position: relative;')
+  const tc = element.tableCellTextColor?.trim()
+  if (tc) lines.push(`  color: ${tc};`)
+  return lines
+}
+
+function tableTrMinHeightBlock(element: DesignElement, ec: string): string {
+  const mh = element.tableTrMinHeight
+  if (mh == null || !Number.isFinite(mh) || mh <= 0) return ''
+  return `.${ec} tr {\n  min-height: ${Math.floor(mh)}px;\n}`
+}
+
 const escapeHtml = (s: string): string =>
   s
     .replace(/&/g, '&amp;')
@@ -70,7 +107,7 @@ function isRootFlexCanvas(layoutMode: LayoutMode, element: DesignElement): boole
   return layoutMode === 'flex' && element.parentId == null
 }
 
-/** 顶层在 Flex 画布上为 flex 子项，否则为 absolute 堆叠 */
+/** 顶层在 Flex 画布上为 flex 子项（无 left/top）；否则为 absolute 堆叠 */
 function rootStackingCss(
   layoutMode: LayoutMode,
   element: DesignElement,
@@ -78,11 +115,23 @@ function rootStackingCss(
   relativeY: number
 ): string[] {
   if (isRootFlexCanvas(layoutMode, element)) {
+    if (element.isFlexPageShell) {
+      return [
+        '  position: relative;',
+        '  flex: 1 1 auto;',
+        `  z-index: ${element.serial};`,
+        '  align-self: stretch;',
+        '  min-width: 0;',
+        '  min-height: 0;',
+        '  width: 100%;',
+        '  height: 100%;'
+      ]
+    }
     return [
       '  position: relative;',
       '  flex: 0 0 auto;',
       `  z-index: ${element.serial};`,
-      ...layoutCenterCssForAbsolute(element, relativeX, relativeY)
+      ...layoutCenterCssForFlexRootItem(element)
     ]
   }
   return [
@@ -138,28 +187,33 @@ const buildTemplateTree = (
       return
     }
     if (node.kind === 'table') {
-      const rows = Math.max(1, Math.floor(Number(node.tableRows) || 5))
-      const cols = Math.max(1, Math.floor(Number(node.tableCols) || 5))
+      const rows = resolveTableRows(node.tableRows)
+      const cols = resolveTableCols(node.tableCols)
       const block: string[] = []
       block.push(`${indent(level)}<table class="${c(node)}">`)
+      block.push(`${indent(level + 1)}<tbody>`)
       for (let r = 0; r < rows; r += 1) {
-        block.push(`${indent(level + 1)}<tr>`)
-        for (let c = 0; c < cols; c += 1) {
+        block.push(`${indent(level + 2)}<tr>`)
+        for (let ci = 0; ci < cols; ci += 1) {
           const cell = elements.find(
             (el) =>
               el.parentId === node.id &&
               el.isTableCell &&
               el.tableCellRow === r &&
-              el.tableCellCol === c
+              el.tableCellCol === ci
           )
-          block.push(`${indent(level + 2)}<td>`)
+          block.push(`${indent(level + 3)}<td>`)
           if (cell) {
-            block.push(...buildTemplateTree(elements, cell.id, level + 3))
+            /** 单元格槽位容器：与设计器 .designer-td-slot 一致，flex 只加在此 div 上，避免 td 设 display:flex 破坏表格排版 */
+            block.push(`${indent(level + 4)}<div class="${c(cell)}">`)
+            block.push(...buildTemplateTree(elements, cell.id, level + 5))
+            block.push(`${indent(level + 4)}</div>`)
           }
-          block.push(`${indent(level + 2)}</td>`)
+          block.push(`${indent(level + 3)}</td>`)
         }
-        block.push(`${indent(level + 1)}</tr>`)
+        block.push(`${indent(level + 2)}</tr>`)
       }
+      block.push(`${indent(level + 1)}</tbody>`)
       block.push(`${indent(level)}</table>`)
       lines.push(...wrapTemplateLinesWithTransition(block, node, level))
       return
@@ -393,10 +447,18 @@ export function generateStyleBlockForElement(
 
   if (element.kind === 'table') {
     const bc = element.borderColor ?? '#d0d0d0'
-    const rows = Math.max(1, Math.floor(Number(element.tableRows) || 5))
-    const cols = Math.max(1, Math.floor(Number(element.tableCols) || 5))
+    const rows = resolveTableRows(element.tableRows)
+    const cols = resolveTableCols(element.tableCols)
     const tw = Math.max(1, element.width)
     const th = Math.max(1, element.height)
+    /** Flex 画布：常规 auto 布局表；absolute/grid 仍为 fixed + 逐格百分比 */
+    const useFlexNativeTable = layoutMode === 'flex'
+    const tableBackgroundDecl = (): string[] => {
+      if (element.backgroundTransparent) return []
+      const raw = String(element.background ?? '').trim()
+      if (!raw || raw.toLowerCase() === 'transparent') return []
+      return [`  background: ${cssBackgroundFill(element)};`]
+    }
     const cellRuleBlocks: string[] = []
     for (let r = 0; r < rows; r += 1) {
       for (let c = 0; c < cols; c += 1) {
@@ -410,22 +472,44 @@ export function generateStyleBlockForElement(
         if (!cell) continue
         const wPct = (cell.width / tw) * 100
         const hPct = (cell.height / th) * 100
-        const inner: string[] = [
+        const cellEc = elementDomClass(cell)
+        const tdBox: string[] = [
           `  width: ${wPct.toFixed(4)}%;`,
           `  height: ${hPct.toFixed(4)}%;`,
           '  box-sizing: border-box;',
           ...paddingCssDecl(cell),
-          ...marginCssDecl(cell),
-          ...(cell.flexLayoutEnabled
-            ? [...flexContainerCssLines(cell), '  overflow: hidden;']
-            : [])
+          ...marginCssDecl(cell)
         ]
         cellRuleBlocks.push(
-          `.${ec} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) {\n${inner.join('\n')}\n}`
+          `.${ec} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) {\n${tdBox.join('\n')}\n}`
+        )
+        const wrapLines: string[] = [
+          '  position: relative;',
+          '  width: 100%;',
+          '  height: 100%;',
+          '  box-sizing: border-box;',
+          '  min-height: 0;'
+        ]
+        if (cell.flexLayoutEnabled) {
+          wrapLines.push(...flexContainerCssLines(cell), '  overflow: hidden;')
+        }
+        cellRuleBlocks.push(
+          `.${ec} tr:nth-child(${r + 1}) td:nth-child(${c + 1}) > .${cellEc} {\n${wrapLines.join('\n')}\n}`
         )
       }
     }
     const cellRules = cellRuleBlocks.length ? `\n${cellRuleBlocks.join('\n')}` : ''
+    const tableFlexStackCss: string[] =
+      layoutMode === 'flex'
+        ? [
+            '  position: relative;',
+            '  flex-shrink: 0;',
+            `  z-index: ${element.serial};`,
+            ...layoutCenterCssForFlexRootItem(element)
+          ]
+        : []
+    const tableLayoutLines = ['  border-collapse: collapse;', '  table-layout: fixed;']
+    const tdRuleLines = tableTdSharedCssLines(element, bc, useFlexNativeTable)
     if (shouldUseGridPlacementCss(layoutMode, element, parent)) {
       const gp = gridPlacementForElement(gridPlacementModel, relativeX, relativeY, canvas.gridSize)
       return [
@@ -435,42 +519,37 @@ export function generateStyleBlockForElement(
         ...gridItemSelfCss(),
         `  width: ${wh.width};`,
         `  height: ${wh.height};`,
-        `  background: ${cssBackgroundFill(element)};`,
+        ...tableBackgroundDecl(),
         `  opacity: ${element.opacity};`,
         '  position: relative;',
-        '  border-collapse: collapse;',
-        '  table-layout: fixed;',
+        ...tableLayoutLines,
         ...commonStyles,
         '}',
         `.${ec} td {`,
-        `  border: 1px solid ${bc};`,
-        '  position: relative;',
-        '  vertical-align: top;',
+        ...tdRuleLines,
         '}',
         cellRules,
-        tableStripingCss(element)
+        tableStripingCss(element),
+        tableTrMinHeightBlock(element, ec)
       ]
         .filter(Boolean)
         .join('\n')
     }
     return [
       `.${ec} {`,
-      ...rootStackingCss(layoutMode, element, relativeX, relativeY),
+      ...(layoutMode === 'flex' ? tableFlexStackCss : rootStackingCss(layoutMode, element, relativeX, relativeY)),
       `  width: ${wh.width};`,
       `  height: ${wh.height};`,
-      `  background: ${cssBackgroundFill(element)};`,
-      `  opacity: ${element.opacity};`,
-      '  border-collapse: collapse;',
-      '  table-layout: fixed;',
+      ...tableBackgroundDecl(),
+      ...tableLayoutLines,
       ...commonStyles,
       '}',
       `.${ec} td {`,
-      `  border: 1px solid ${bc};`,
-      '  position: relative;',
-      '  vertical-align: top;',
+      ...tdRuleLines,
       '}',
       cellRules,
-      tableStripingCss(element)
+      tableStripingCss(element),
+      tableTrMinHeightBlock(element, ec)
     ]
       .filter(Boolean)
       .join('\n')

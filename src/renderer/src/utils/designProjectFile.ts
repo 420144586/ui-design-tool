@@ -7,6 +7,10 @@ export interface DesignProjectFileV1 {
   format: typeof DESIGN_PROJECT_FORMAT
   version: typeof DESIGN_PROJECT_VERSION
   savedAt: string
+  /** 设计项目实例 id，用于会话内绑定保存路径与静默保存 */
+  projectId?: string
+  /** 最近一次保存的绝对路径（备份绑定；读取时若系统未返回路径可兜底） */
+  savedFilePath?: string
   canvas: CanvasConfig
   elements: DesignElement[]
   nextSerial: number
@@ -18,13 +22,24 @@ export const stringifyDesignProjectFile = (
   canvas: CanvasConfig,
   elements: DesignElement[],
   nextSerial: number,
-  options?: { workspaceMode?: WorkspaceMode; virtualEnv?: VirtualEnvConfig }
+  options?: {
+    workspaceMode?: WorkspaceMode
+    virtualEnv?: VirtualEnvConfig
+    projectId?: string
+    savedFilePath?: string
+  }
 ): string =>
   JSON.stringify(
     {
       format: DESIGN_PROJECT_FORMAT,
       version: DESIGN_PROJECT_VERSION,
       savedAt: new Date().toISOString(),
+      ...(options?.projectId != null && String(options.projectId).trim() !== ''
+        ? { projectId: String(options.projectId).trim() }
+        : {}),
+      ...(options?.savedFilePath != null && String(options.savedFilePath).trim() !== ''
+        ? { savedFilePath: String(options.savedFilePath).trim() }
+        : {}),
       canvas: { ...canvas },
       elements: JSON.parse(JSON.stringify(elements)) as DesignElement[],
       nextSerial,
@@ -58,11 +73,19 @@ export const parseDesignProjectFile = (raw: string): DesignProjectFileV1 | null 
       : undefined
   const virtualEnv =
     o.virtualEnv && typeof o.virtualEnv === 'object' ? (o.virtualEnv as VirtualEnvConfig) : undefined
+  const projectId =
+    typeof o.projectId === 'string' && o.projectId.trim() !== '' ? o.projectId.trim() : undefined
+  const savedFilePath =
+    typeof o.savedFilePath === 'string' && o.savedFilePath.trim() !== ''
+      ? o.savedFilePath.trim()
+      : undefined
 
   return {
     format: DESIGN_PROJECT_FORMAT,
     version: 1,
     savedAt: typeof o.savedAt === 'string' ? o.savedAt : '',
+    ...(projectId != null ? { projectId } : {}),
+    ...(savedFilePath != null ? { savedFilePath } : {}),
     canvas: o.canvas as CanvasConfig,
     elements: o.elements as DesignElement[],
     nextSerial: Math.floor(nextSerial),

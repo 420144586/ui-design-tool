@@ -7,6 +7,7 @@ import { clampAbsTopLeftInsideParentContent } from '@renderer/utils/designChildP
 import { resolveFlexContainerHitAscend } from '@renderer/utils/designDropTarget'
 import { canAddChildElements } from '@renderer/utils/designElementHost'
 import { sortSiblingsForRenderOrder } from '@renderer/utils/elementFlex'
+import { resolveTableCols, resolveTableRows } from '@renderer/utils/tableDimensions'
 import DesignTreeNode from './DesignTreeNode.vue'
 import ElementContextDrawer from './ElementContextDrawer.vue'
 
@@ -416,10 +417,11 @@ const placePresetAsChildOf = (
         width: w,
         height: h,
         background: preset.background,
+        ...(preset.backgroundTransparent === true ? { backgroundTransparent: true } : {}),
         text: '',
         opacity: preset.opacity,
-        tableRows: preset.tableRows,
-        tableCols: preset.tableCols,
+        tableRows: resolveTableRows(preset.tableRows),
+        tableCols: resolveTableCols(preset.tableCols),
         borderColor: preset.borderColor
       },
       { parentId: host.id }
@@ -644,10 +646,11 @@ const placeActivePresetAtPointer = (event: MouseEvent): void => {
         width: w,
         height: h,
         background: preset.background,
+        ...(preset.backgroundTransparent === true ? { backgroundTransparent: true } : {}),
         text: '',
         opacity: preset.opacity,
-        tableRows: preset.tableRows,
-        tableCols: preset.tableCols,
+        tableRows: resolveTableRows(preset.tableRows),
+        tableCols: resolveTableCols(preset.tableCols),
         borderColor: preset.borderColor
       },
       presetPlaceOpts
@@ -775,7 +778,7 @@ const onCanvasClick = (event: MouseEvent): void => {
       <div
         ref="canvasRef"
         class="canvas"
-        :class="{ 'canvas--no-grid': embeddedVirtual || store.canvas.layoutMode === 'flex' }"
+        :class="{ 'canvas--no-grid': embeddedVirtual }"
         :style="embeddedVirtual ? {} : gridBackground"
         @mousemove="onMouseMove"
         @mouseleave="onMouseLeave"

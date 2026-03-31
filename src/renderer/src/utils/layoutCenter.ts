@@ -42,21 +42,19 @@ export function applyLayoutCenterToInlineStyle(
     return
   }
 
-  /** Flex 画布根为 position:relative 的 flex 子项，居中语义与 absolute 一致（left/top + transform） */
+  /** Flex 画布根为 flex 子项：居中不用 left/top，避免与纯 flex 排版混用 */
   if (layoutMode === 'flex') {
     if (ch && cv) {
-      style.left = '50%'
-      style.top = '50%'
-      style.transform = 'translate(-50%, -50%)'
+      style.margin = 'auto'
+      style.alignSelf = 'center'
       return
     }
     if (ch) {
-      style.left = '50%'
-      style.transform = 'translateX(-50%)'
+      style.marginLeft = 'auto'
+      style.marginRight = 'auto'
       return
     }
-    style.top = '50%'
-    style.transform = 'translateY(-50%)'
+    style.alignSelf = 'center'
     return
   }
 
@@ -89,6 +87,16 @@ export function layoutCenterCssForAbsolute(element: DesignElement, relativeX: nu
     return ['  left: 50%;', `  top: ${relativeY}px;`, '  transform: translateX(-50%);']
   }
   return [`  left: ${relativeX}px;`, '  top: 50%;', '  transform: translateY(-50%);']
+}
+
+/** 导出 CSS：Flex 画布根级 flex 子项的居中（无 left/top/transform） */
+export function layoutCenterCssForFlexRootItem(element: DesignElement): string[] {
+  const ch = element.layoutCenterHorizontal === true
+  const cv = element.layoutCenterVertical === true
+  if (!ch && !cv) return []
+  if (ch && cv) return ['  margin: auto;', '  align-self: center;']
+  if (ch) return ['  margin-left: auto;', '  margin-right: auto;']
+  return ['  align-self: center;']
 }
 
 /** 导出 CSS：grid 子项在扩展后的网格区域内的对齐 */

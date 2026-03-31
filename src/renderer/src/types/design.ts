@@ -85,8 +85,16 @@ export interface DesignElement {
   tableCols?: number
   /** 表格单元格边框颜色 */
   borderColor?: string
-  /** 为 true 时显示列/行分割线并可拖拽调整单元格尺寸；否则仅可拖拽移动整张表 */
-  tableResizeEnabled?: boolean
+  /** 所有 td 统一内边距（px）；不设时：flex 导出默认 2px，fixed 网格导出默认 0 */
+  tableTdPadding?: number
+  /** td 边框宽度（px），默认可视作 1 */
+  tableTdBorderWidth?: number
+  /** td 边框样式（与 borderStyle 取值一致） */
+  tableTdBorderStyle?: 'none' | 'solid' | 'dashed' | 'dotted'
+  /** td 内文字颜色 */
+  tableCellTextColor?: string
+  /** tr 最小高度（px），可选 */
+  tableTrMinHeight?: number
   /** tr:nth-child(odd) 行背景 */
   tableTrOddBgEnabled?: boolean
   tableTrOddBg?: string
@@ -216,6 +224,8 @@ export interface BasePreset {
   width: number
   height: number
   background: string
+  /** 为 true 时不输出背景色（表格等默认无填充） */
+  backgroundTransparent?: boolean
   text: string
   opacity: number
 }

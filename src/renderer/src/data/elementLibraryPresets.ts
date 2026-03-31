@@ -58,14 +58,15 @@ export const BASIC_ELEMENT_PRESETS: ElementPreset[] = [
   {
     kind: 'table',
     type: 'table',
-    name: 'Table 5×5',
-    width: 250,
-    height: 250,
-    background: '#1a1f2b',
+    name: 'Table 3×3',
+    width: 240,
+    height: 240,
+    background: '',
+    backgroundTransparent: true,
     text: '',
     opacity: 1,
-    tableRows: 5,
-    tableCols: 5,
+    tableRows: 3,
+    tableCols: 3,
     borderColor: '#d0d0d0'
   }
 ]

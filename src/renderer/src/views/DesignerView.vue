@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useDesignStore } from '@renderer/store/design'
+import { useDesignStore, newDesignProjectUuid } from '@renderer/store/design'
 import CodeView from '@renderer/components/CodeView/CodeView.vue'
 import DesignArea from '@renderer/components/DesignArea/DesignArea.vue'
 import ElementLibrary from '@renderer/components/ElementLibrary/ElementLibrary.vue'
@@ -21,6 +21,30 @@ const router = useRouter()
 function onToolbarLayoutCenter(mode: 'horizontal' | 'vertical' | 'both'): void {
   const id = store.selectedElementId
   if (!id) return
+
+  if (store.canvas.layoutMode === 'flex' && mode === 'both') {
+    const el = store.elements.find((e) => e.id === id)
+    const parentId = el?.parentId
+    if (parentId) {
+      const parent = store.elements.find((e) => e.id === parentId)
+      if (parent?.flexLayoutEnabled) {
+        store.beginHistoryBatch()
+        store.updateElement(
+          parentId,
+          { justifyContent: 'center', alignItems: 'center' },
+          { skipHistory: true }
+        )
+        store.updateElement(
+          id,
+          { layoutCenterHorizontal: true, layoutCenterVertical: true },
+          { skipHistory: true }
+        )
+        store.endHistoryBatch()
+        return
+      }
+    }
+  }
+
   if (mode === 'horizontal') {
     store.updateElement(id, { layoutCenterHorizontal: true, layoutCenterVertical: false })
   } else if (mode === 'vertical') {
@@ -33,7 +57,6 @@ function onToolbarLayoutCenter(mode: 'horizontal' | 'vertical' | 'both'): void {
 const isLoading = ref(false)
 const loadingText = ref('加载中...')
 const toastMessage = ref('')
-const currentFilePath = ref<string | null>(null)
 
 const showToast = (msg: string) => {
   toastMessage.value = msg
@@ -200,6 +223,7 @@ const importFromVue = async (): Promise<void> => {
     store.setLayoutMode(imported.layoutMode)
     store.replaceElements(imported.elements)
     store.setActiveView('design')
+    store.beginNewDesignProjectSession()
   } finally {
     isLoading.value = false
   }
@@ -216,11 +240,13 @@ type LoadDesignProjectResult = {
   content?: string
 }
 
-const invokeSaveDesignProject = async (content: string, filePath?: string): Promise<SaveDesignProjectResult> => {
+/** filePath 须为实际路径或 ''；勿用 undefined，避免 IPC 丢键 */
+const invokeSaveDesignProject = async (content: string, filePath: string): Promise<SaveDesignProjectResult> => {
+  const fp = typeof filePath === 'string' ? filePath : ''
   if (typeof window.api?.saveDesignProject === 'function') {
-    return window.api.saveDesignProject(content, filePath)
+    return window.api.saveDesignProject(content, fp)
   }
-  const fallback = await window.electron.ipcRenderer.invoke('save-design-project', { content, filePath })
+  const fallback = await window.electron.ipcRenderer.invoke('save-design-project', { content, filePath: fp })
   return (fallback ?? { canceled: true }) as SaveDesignProjectResult
 }
 
@@ -232,22 +258,25 @@ const invokeLoadDesignProject = async (): Promise<LoadDesignProjectResult> => {
   return (fallback ?? { canceled: true }) as LoadDesignProjectResult
 }
 
-const saveDesignProject = async (silent: boolean = false): Promise<void> => {
+/** @param quietUi 为 true 时不显示全屏 loading；已绑定路径时保存使用短提示 */
+const saveDesignProject = async (quietUi: boolean = false): Promise<void> => {
+  const hasBoundPath = !!store.designProjectFilePath
+  const useQuietUi = quietUi || hasBoundPath
   try {
-    if (!silent) {
+    if (!useQuietUi) {
       isLoading.value = true
       loadingText.value = '正在保存...'
     }
+    const boundPath = store.designProjectFilePath?.trim() ?? ''
     const content = stringifyDesignProjectFile(store.canvas, store.canonicalElements, store.canonicalNextSerial, {
       workspaceMode: store.workspaceMode,
-      virtualEnv: store.virtualEnv
+      virtualEnv: store.virtualEnv,
+      projectId: store.designProjectId,
+      ...(boundPath !== '' ? { savedFilePath: boundPath } : {})
     })
-    const result = await invokeSaveDesignProject(
-      content,
-      currentFilePath.value ? currentFilePath.value : undefined
-    )
+    const result = await invokeSaveDesignProject(content, boundPath)
     if (!result.canceled && result.filePath) {
-      currentFilePath.value = result.filePath
+      store.setDesignProjectFilePath(result.filePath)
 
       const htmlContent = generatePreviewHtml(store.canonicalElements, store.canvas.layoutMode, {
         width: store.canvas.width,
@@ -261,10 +290,10 @@ const saveDesignProject = async (silent: boolean = false): Promise<void> => {
         console.error('[deesign] 写入预览文件失败:', e)
       }
 
-      showToast(`已保存：${result.filePath}`)
+      showToast(useQuietUi ? '已保存' : `已保存：${result.filePath}`)
     }
   } finally {
-    if (!silent) {
+    if (!useQuietUi) {
       isLoading.value = false
     }
   }
@@ -282,9 +311,12 @@ const loadDesignProject = async (): Promise<void> => {
       return
     }
     store.applyDesignProjectFile(data)
-    if (result.filePath) {
-      currentFilePath.value = result.filePath
-    }
+    const pathFromOs = (result.filePath && String(result.filePath).trim()) || ''
+    const pathFromFile = (data.savedFilePath && data.savedFilePath.trim()) || ''
+    store.setDesignProjectFilePath(pathFromOs || pathFromFile || null)
+    store.setDesignProjectId(
+      data.projectId && data.projectId.trim().length > 0 ? data.projectId.trim() : newDesignProjectUuid()
+    )
   } finally {
     isLoading.value = false
   }
@@ -298,9 +330,27 @@ const clearCanvas = (): void => {
   if (window.confirm('确定要清空画布吗？此操作可通过撤销恢复。')) {
     store.replaceElements([])
     store.clearSelection()
-    currentFilePath.value = null
     showToast('画布已清空')
   }
+}
+
+/** 新建设计项目：新 projectId、清空画布并解除文件绑定；之后首次保存仍会弹出路径选择 */
+const beginNewDesignProject = (): void => {
+  const notPristine =
+    !store.isEffectivelyEmptyCanvas || store.designProjectFilePath != null
+  if (notPristine) {
+    if (
+      !window.confirm(
+        '将开始新的设计项目：画布会清空并解除已绑定的保存路径。请先确认已保存需要保留的内容。是否继续？'
+      )
+    ) {
+      return
+    }
+  }
+  store.replaceElements([])
+  store.clearSelection()
+  store.beginNewDesignProjectSession()
+  showToast('已新建项目')
 }
 
 const isTypingInField = (target: EventTarget | null): boolean => {
@@ -317,17 +367,14 @@ const isTypingInField = (target: EventTarget | null): boolean => {
 }
 
 const onDesignHotkeys = (event: KeyboardEvent): void => {
-  if (store.activeView !== 'design') return
-
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    if (isTypingInField(event.target)) return
     event.preventDefault()
-    if (currentFilePath.value) {
-      saveDesignProject(true)
-    } else {
-      saveDesignProject(false)
-    }
+    void saveDesignProject(!!store.designProjectFilePath)
     return
   }
+
+  if (store.activeView !== 'design') return
 
   if (isTypingInField(event.target)) return
   if (
@@ -508,7 +555,17 @@ onUnmounted(() => {
         <button class="action" @click="store.adjustZoom(-0.1)">-</button>
         <span class="zoom">{{ zoomPercent }}</span>
         <button class="action" @click="store.adjustZoom(0.1)">+</button>
-        <button class="action" type="button" @click="saveDesignProject()">保存设计稿</button>
+        <button class="action" type="button" title="新 projectId，清空画布；未新建时保存仍写入已绑定文件" @click="beginNewDesignProject()">
+          新建项目
+        </button>
+        <button
+          class="action"
+          type="button"
+          :title="store.designProjectFilePath ? `已绑定：${store.designProjectFilePath}` : '首次保存将弹出保存对话框'"
+          @click="void saveDesignProject(!!store.designProjectFilePath)"
+        >
+          保存设计稿
+        </button>
         <button class="action" type="button" @click="loadDesignProject()">读取设计稿</button>
         <button class="action danger" type="button" @click="clearCanvas()">清空画布</button>
         <button class="action" @click="importFromVue()">导入 .vue</button>
@@ -650,7 +707,11 @@ onUnmounted(() => {
               <button
                 type="button"
                 class="tb-btn"
-                title="在父容器内水平与垂直均居中"
+                :title="
+                  store.canvas.layoutMode === 'flex'
+                    ? 'Flex：将父容器的 justify-content / align-items 设为居中，并标记本项在父内居中'
+                    : '在父容器内水平与垂直均居中'
+                "
                 @click="onToolbarLayoutCenter('both')"
               >
                 居中
